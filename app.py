@@ -188,11 +188,10 @@ job_state = {
 }
 
 STAGES = [
-    ("01_scrape_reddit",    "Scrape Reddit"),
-    ("02_scrape_images",    "Scrape Images"),
+    ("01_scrape_data",       "Scrape Text + Images"),
     ("03_sentiment_analysis","Sentiment Analysis"),
-    ("04_image_processing", "Image Processing"),
-    ("05_cross_analysis",   "Cross Analysis"),
+    ("04_image_processing",  "Image Processing"),
+    ("05_cross_analysis",    "Cross Analysis"),
 ]
 
 OUTPUT_DIR = Path("/data/output")

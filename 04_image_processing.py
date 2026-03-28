@@ -1,20 +1,30 @@
 """
-04_image_processing.py — Process and analyze manhole cover images
+STAGE 3: Image Processing
+Process and analyze manhole cover images scraped by 01_scrape_data.py.
+
+Reads from:
+  /data/images/<country>/  (organized by country)
+  /data/image_metadata.csv (from Stage 1)
+
+Outputs:
+  /data/output/image_analysis.csv
 """
 
 import os
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
 from PIL import Image
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-IMAGE_DIR = "/data/images/"
-IMAGE_METADATA = "/data/images_metadata.csv"
-OUTPUT_DIR = "/data/output/"
-OUTPUT_CSV = "/data/output/image_analysis.csv"
+IMAGE_DIR       = Path("/data/images")
+IMAGE_METADATA  = Path("/data/image_metadata.csv")  # Updated to match Stage 1 output
+OUTPUT_DIR      = Path("/data/output")
+OUTPUT_CSV      = OUTPUT_DIR / "image_analysis.csv"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 SUPPORTED_FORMATS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"]
+
 
 def get_image_info(image_path):
     """Extract basic information from an image."""
@@ -31,37 +41,39 @@ def get_image_info(image_path):
         print(f"  Error reading {image_path}: {e}")
         return None
 
+
 def process_images():
     """Process and analyze downloaded images."""
     
     # Ensure output directory exists
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     
     # Check if image directory exists
-    if not os.path.exists(IMAGE_DIR):
-        print(f"ERROR: {IMAGE_DIR} not found. Run 02_scrape_images.py first.")
+    if not IMAGE_DIR.exists():
+        print(f"ERROR: {IMAGE_DIR} not found. Run 01_scrape_data.py first.")
         return
     
-    # Get all image files
+    # Get all image files recursively (from country subdirectories)
     image_files = []
-    for f in os.listdir(IMAGE_DIR):
-        if any(f.lower().endswith(ext) for ext in SUPPORTED_FORMATS):
-            image_files.append(f)
+    for ext in SUPPORTED_FORMATS:
+        image_files.extend(IMAGE_DIR.rglob(f"*{ext}"))
+        image_files.extend(IMAGE_DIR.rglob(f"*{ext.upper()}"))
     
     print(f"Found {len(image_files)} images in {IMAGE_DIR}")
     
     # Load metadata if available
     metadata_df = None
-    if os.path.exists(IMAGE_METADATA):
+    if IMAGE_METADATA.exists():
         metadata_df = pd.read_csv(IMAGE_METADATA)
         print(f"Loaded metadata for {len(metadata_df)} images")
     
     results = []
     
-    for idx, filename in enumerate(image_files):
-        image_path = os.path.join(IMAGE_DIR, filename)
+    for idx, image_path in enumerate(image_files):
+        filename = image_path.name
+        relative_path = str(image_path.relative_to(IMAGE_DIR))
         
-        print(f"Processing {idx + 1}/{len(image_files)}: {filename}...")
+        print(f"Processing {idx + 1}/{len(image_files)}: {relative_path}...")
         
         # Get image info
         info = get_image_info(image_path)
@@ -71,17 +83,32 @@ def process_images():
         # Get file size
         file_size = os.path.getsize(image_path)
         
-        # Look up metadata
-        post_id = os.path.splitext(filename)[0]
+        # Extract country from path if organized by country
+        parts = relative_path.split(os.sep)
+        country = parts[0] if len(parts) > 1 else "unknown"
+        
+        # Look up metadata by local_path or filename
         meta_row = None
         if metadata_df is not None:
-            matching = metadata_df[metadata_df['post_id'] == post_id]
+            # Try matching by local_path first
+            if "local_path" in metadata_df.columns:
+                matching = metadata_df[metadata_df["local_path"].str.contains(filename, na=False, regex=False)]
+            else:
+                matching = pd.DataFrame()
+            
+            if matching.empty:
+                # Fallback: match by filename in url or title
+                matching = metadata_df[
+                    metadata_df.get("url", pd.Series()).str.contains(filename[:30], na=False, regex=False)
+                ]
+            
             if not matching.empty:
                 meta_row = matching.iloc[0]
         
         result = {
             "filename": filename,
-            "post_id": post_id,
+            "relative_path": relative_path,
+            "country": country,
             "width": info["width"],
             "height": info["height"],
             "format": info["format"],
@@ -95,8 +122,8 @@ def process_images():
         # Add metadata if available
         if meta_row is not None:
             result["title"] = meta_row.get("title", "")
-            result["subreddit"] = meta_row.get("subreddit", "")
-            result["source_url"] = meta_row.get("source_url", "")
+            result["source"] = meta_row.get("source", "")
+            result["source_url"] = meta_row.get("url", "")
         
         results.append(result)
     
@@ -111,8 +138,14 @@ def process_images():
         print(f"Total images: {len(results)}")
         print(f"Average resolution: {results_df['width'].mean():.0f} x {results_df['height'].mean():.0f}")
         print(f"Total size: {results_df['file_size_kb'].sum() / 1024:.2f} MB")
+        
+        # By country
+        if "country" in results_df.columns:
+            print("\nBy country:")
+            print(results_df.groupby("country").size().to_string())
     else:
         print("No images processed")
+
 
 if __name__ == "__main__":
     print("=== Starting Image Processing ===")
