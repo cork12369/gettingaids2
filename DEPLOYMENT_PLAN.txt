@@ -1,0 +1,220 @@
+# Zeabur Deployment — Implementation Plan
+# Manhole Cover Design Analysis Pipeline
+
+## Architecture Overview
+
+```
+GitHub repo
+    │
+    └─► Zeabur (auto-deploy on push)
+            │
+            ├── Python service (Flask dashboard + auth + pipeline scripts)
+            │       app.py                   ← web entrypoint + auth
+            │       01_scrape_reddit.py
+            │       02_scrape_images.py
+            │       03_sentiment_analysis.py
+            │       04_image_processing.py
+            │       05_cross_analysis.py
+            │
+            ├── Persistent Volume → /data/
+            │       /data/images/            ← downloaded images (~500MB)
+            │       /data/hf_cache/          ← HuggingFace model cache
+            │       /data/reddit_raw.csv
+            │       /data/image_features.csv
+            │       /data/output/            ← charts + CSVs for download
+            │
+            └── Environment Variables (set in Zeabur dashboard)
+                    ACCESS_KEY              ← base32 key for dashboard login
+                    SESSION_SECRET          ← Flask session signing secret
+                    REDDIT_CLIENT_ID
+                    REDDIT_CLIENT_SECRET
+                    FLICKR_KEY
+                    FLICKR_SECRET
+```
+
+---
+
+## Step 0 — Generate Auth Keys (do this first, locally)
+
+```bash
+# Access key — share this with teammates who need dashboard access
+python -c "import base64, os; print(base64.b32encode(os.urandom(10)).decode())"
+# Example output: MFRA2YTBMJQXIZLB
+
+# Session secret — keep this private, never share or commit
+python -c "import secrets; print(secrets.token_hex(32))"
+# Example output: 3f2a9c1d...
+```
+
+Save both outputs — you'll need them in Step 4.
+
+---
+
+## Step 1 — Prepare the GitHub Repo
+
+Structure your repo exactly like this at the root:
+
+```
+manhole-pipeline/
+├── app.py                      ← must be at root (Zeabur entrypoint)
+├── requirements.txt            ← must be at root
+├── zbpack.json                 ← must be at root
+├── 01_scrape_reddit.py
+├── 02_scrape_images.py
+├── 03_sentiment_analysis.py
+├── 04_image_processing.py
+└── 05_cross_analysis.py
+```
+
+Add a .gitignore:
+
+```
+data/
+output/
+*.csv
+*.png
+hf_cache/
+__pycache__/
+.env
+```
+
+IMPORTANT — update all pipeline scripts to use /data/ paths:
+  "data/reddit_raw.csv"   →  "/data/reddit_raw.csv"
+  "data/images/"          →  "/data/images/"
+  "output/"               →  "/data/output/"
+
+Also add this line to 03_sentiment_analysis.py (model caching):
+  os.environ["TRANSFORMERS_CACHE"] = "/data/hf_cache"
+
+---
+
+## Step 2 — Create Zeabur Project
+
+1. Go to zeabur.com → Dashboard → New Project
+2. Add Service → Git → connect GitHub → select your repo
+3. Zeabur auto-detects Python from requirements.txt
+4. zbpack.json handles build + start command automatically
+
+---
+
+## Step 3 — Mount Persistent Volume
+
+CRITICAL — without this, all scraped data wipes on every redeploy.
+
+Zeabur dashboard → your service → Volumes tab:
+  Volume ID:  pipeline-data
+  Mount Path: /data
+
+Do this before the first run. Cannot be added retroactively without data loss.
+
+---
+
+## Step 4 — Set Environment Variables
+
+Zeabur dashboard → your service → Variables tab.
+Add all six variables:
+
+  ACCESS_KEY             = MFRA2YTBMJQXIZLB     ← from Step 0
+  SESSION_SECRET         = 3f2a9c1d...           ← from Step 0
+  REDDIT_CLIENT_ID       = your_reddit_id
+  REDDIT_CLIENT_SECRET   = your_reddit_secret
+  FLICKR_KEY             = your_flickr_key
+  FLICKR_SECRET          = your_flickr_secret
+
+Never put these in code or commit them to GitHub.
+
+---
+
+## Step 5 — Set Resources
+
+Zeabur dashboard → your service → Resources:
+  RAM:  2 GB minimum  (RoBERTa inference needs ~1.5GB)
+  CPU:  0.5 vCPU      (sufficient for CPU-only inference)
+
+---
+
+## Step 6 — Deploy
+
+Push to GitHub → Zeabur auto-builds.
+
+First build: ~8–12 minutes (torch is ~800MB, downloads once and caches).
+Subsequent deploys: ~2–3 minutes (cached layers).
+
+Access your dashboard at: https://your-service.zeabur.app
+
+---
+
+## Step 7 — Run the Pipeline
+
+1. Open your Zeabur URL
+2. Enter your ACCESS_KEY at the login screen
+3. Select "Run Full Pipeline" or individual stages
+4. Log streams live, auto-refreshes every 5 seconds
+5. Download outputs from the Outputs section when done
+
+Full pipeline runtime estimate: 2–4 hours on Zeabur shared CPU.
+
+---
+
+## Security Summary
+
+| Threat                  | Protection                                       |
+|-------------------------|--------------------------------------------------|
+| Unauthorized access     | Session-based auth, key required on every login  |
+| Brute force login       | Rate limited: 10/min, 30/hour per IP             |
+| API key exposure        | Env vars only, never in code or HTTP responses   |
+| Source code exposure    | Not possible — Zeabur serves container not code  |
+| Session hijacking       | SESSION_SECRET signs cookies server-side         |
+
+---
+
+## Cost Management
+
+Zeabur is pay-as-you-go. To minimize cost:
+  - Suspend the service after each pipeline run
+  - Resume only when you need to rerun or download outputs
+  - Suspended services cost ~$0
+
+Rough estimate if running only during active use (~10 hrs total):
+  Compute (2GB RAM):   ~$0.50–1.00
+  Persistent volume:   ~$0.10/month
+  Total for project:   < $2
+
+---
+
+## Gotchas
+
+1. TORCH BUILD TIMEOUT
+   If Zeabur times out installing torch, add to requirements.txt:
+     --extra-index-url https://download.pytorch.org/whl/cpu
+   And pin: torch==2.1.0+cpu
+
+2. GUNICORN TIMEOUT
+   zbpack.json sets --timeout 300 for slow pipeline triggers.
+   Do not lower this.
+
+3. SINGLE WORKER
+   gunicorn runs 1 worker to prevent duplicate pipeline runs.
+   Do not increase workers.
+
+4. VOLUME IS THE ONLY PERSISTENT STORAGE
+   Anything written outside /data/ is wiped on restart/redeploy.
+   All scripts must write to /data/ paths.
+
+5. RATE LIMIT STATE IS IN-MEMORY
+   flask-limiter uses memory storage (resets on service restart).
+   Fine for a student project — not suitable for high-security production.
+
+---
+
+## Repo Checklist Before First Deploy
+
+[ ] app.py at repo root
+[ ] requirements.txt at repo root (includes flask-limiter>=3.5.0)
+[ ] zbpack.json at repo root
+[ ] All scripts use /data/ paths
+[ ] os.environ["TRANSFORMERS_CACHE"] = "/data/hf_cache" in script 03
+[ ] No API keys or secrets in any .py file
+[ ] .gitignore covers data/, output/, *.csv, *.png, .env
+[ ] ACCESS_KEY and SESSION_SECRET generated and ready to paste
+[ ] Persistent volume mounted at /data/ in Zeabur before first run
