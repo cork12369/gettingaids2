@@ -26,7 +26,7 @@ scipy>=1.11.0
 
 # Visualization
 matplotlib>=3.7.0
-seaborn>=1.0.0
+seaborn>=0.13.2
 
 # NOTE: torch CPU-only is ~800MB installed.
 # If Zeabur build times out, replace with:
