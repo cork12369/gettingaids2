@@ -1,0 +1,7 @@
+data/
+output/
+*.csv
+*.png
+hf_cache/
+__pycache__/
+.env
