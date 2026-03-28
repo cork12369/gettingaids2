@@ -5,7 +5,7 @@ Minimal Flask dashboard to trigger pipeline stages and view outputs.
 
 import os
 import base64
-import hashlib
+import hmac
 import threading
 import subprocess
 import json
@@ -48,7 +48,7 @@ def _key_valid(provided: str) -> bool:
         return False  # refuse all access if key not configured
     provided_bytes = provided.strip().upper().encode()
     expected_bytes = ACCESS_KEY.strip().upper().encode()
-    return hashlib.compare_digest(provided_bytes, expected_bytes)
+    return hmac.compare_digest(provided_bytes, expected_bytes)
 
 
 def require_auth(f):
