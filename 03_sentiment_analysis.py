@@ -1,6 +1,6 @@
 """
 STAGE 2: Sentiment Analysis
-Runs sentiment scoring on Reddit text + optionally travel blog text.
+Runs sentiment scoring on text data + generates comprehensive visualizations.
 Tags each record by inferred country/region for cross-cultural comparison.
 
 Install: pip install pandas transformers torch scikit-learn matplotlib seaborn
@@ -11,6 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from transformers import pipeline
+from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +19,10 @@ from transformers import pipeline
 # cardiffnlp/twitter-roberta-base-sentiment-latest is good for social text.
 # Alternative: "distilbert-base-uncased-finetuned-sst-2-english" (simpler, faster)
 SENTIMENT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+
+OUTPUT_DIR = Path("/data/output")
+TEXT_CSV = Path("/data/text_raw.csv")
+SENTIMENT_CSV = Path("/data/text_with_sentiment.csv")
 
 # Country/region keyword mapping for tagging text to a region
 # Applied to post title + text + subreddit
@@ -30,8 +35,20 @@ COUNTRY_KEYWORDS = {
     "germany":   ["germany", "german", "berlin", "kanaldeckel"],
     "france":    ["france", "paris", "french"],
     "india":     ["india", "indian", "mumbai", "delhi"],
+    "italy":     ["italy", "italian", "rome", "milan", "roma", "milano"],
+    "spain":     ["spain", "spanish", "madrid", "barcelona"],
+    "australia": ["australia", "australian", "sydney", "melbourne"],
+    "canada":    ["canada", "canadian", "toronto", "vancouver"],
+    "brazil":    ["brazil", "brazilian", "sao paulo", "rio"],
+    "netherlands": ["netherlands", "dutch", "amsterdam", "holland"],
+    "south_korea": ["korea", "korean", "seoul", "south korea"],
+    "thailand":  ["thailand", "thai", "bangkok"],
+    "mexico":    ["mexico", "mexican", "cdmx", "mexico city"],
     "generic":   ["manhole", "drain cover", "sewer cover"],  # fallback
 }
+
+# Minimum text records target per country
+MIN_TEXT_PER_COUNTRY = 10
 
 # ── Country Tagger ────────────────────────────────────────────────────────────
 
@@ -152,48 +169,168 @@ def keyword_frequency_by_country(df):
 
 # ── Visualizations ────────────────────────────────────────────────────────────
 
-def plot_sentiment_by_country(summary_df):
-    fig, ax = plt.subplots(figsize=(10, 5))
-    colors = ["#2ecc71" if v > 0 else "#e74c3c" for v in summary_df["weighted_sentiment"]]
-    summary_df["weighted_sentiment"].plot(
-        kind="barh", ax=ax, color=colors, edgecolor="black", linewidth=0.5
-    )
-    ax.axvline(0, color="black", linewidth=1)
-    ax.set_title("Weighted Sentiment Score by Country\n(Reddit posts + comments)", fontsize=13)
-    ax.set_xlabel("Weighted Sentiment Score (−1 to +1)")
+def plot_sentiment_by_country(summary_df, output_dir):
+    """Figure 1: Weighted Sentiment Score by Country"""
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Sort by weighted sentiment
+    data = summary_df["weighted_sentiment"].sort_values(ascending=True)
+    
+    # Color based on polarity
+    colors = ["#2ecc71" if v > 0.1 else "#e74c3c" if v < -0.1 else "#f39c12" for v in data]
+    
+    bars = ax.barh(data.index, data.values, color=colors, edgecolor="black", linewidth=0.5)
+    
+    ax.axvline(0, color="black", linewidth=1, linestyle="--")
+    ax.set_title("Figure 1: Weighted Sentiment Score by Country\n(Positive = Green, Negative = Red, Neutral = Orange)", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Weighted Sentiment Score (−1 to +1)", fontsize=11)
+    ax.set_ylabel("Country", fontsize=11)
+    
+    # Add value labels
+    for bar, val in zip(bars, data.values):
+        ax.text(val + 0.02, bar.get_y() + bar.get_height()/2, f"{val:.2f}", 
+                va="center", fontsize=9)
+    
     plt.tight_layout()
-    plt.savefig("output/sentiment_by_country.png", dpi=150)
-    plt.show()
+    plt.savefig(output_dir / "sentiment_by_country.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: sentiment_by_country.png")
 
 
-def plot_keyword_heatmap(kw_df):
-    fig, ax = plt.subplots(figsize=(10, 6))
+def plot_sentiment_composition(df, output_dir):
+    """Figure 2: Sentiment Composition by Country (100% stacked bar)"""
+    fig, ax = plt.subplots(figsize=(14, 6))
+    
+    # Calculate composition per country
+    composition = df.groupby("country")["sentiment"].value_counts(normalize=True).unstack(fill_value=0)
+    
+    # Rename columns for clarity
+    composition.columns = ["Negative" if c == -1 else "Neutral" if c == 0 else "Positive" for c in composition.columns]
+    
+    # Ensure all columns exist
+    for col in ["Negative", "Neutral", "Positive"]:
+        if col not in composition.columns:
+            composition[col] = 0
+    
+    composition = composition[["Negative", "Neutral", "Positive"]]
+    composition = composition.sort_values("Positive", ascending=False)
+    
+    # Create stacked bar
+    x = range(len(composition))
+    width = 0.7
+    
+    bars1 = ax.bar(x, composition["Negative"] * 100, width, label="Negative", color="#e74c3c")
+    bars2 = ax.bar(x, composition["Neutral"] * 100, width, bottom=composition["Negative"] * 100, 
+                   label="Neutral", color="#95a5a6")
+    bars3 = ax.bar(x, composition["Positive"] * 100, width, 
+                   bottom=(composition["Negative"] + composition["Neutral"]) * 100, 
+                   label="Positive", color="#2ecc71")
+    
+    ax.set_xticks(x)
+    ax.set_xticklabels(composition.index, rotation=45, ha="right")
+    ax.set_ylabel("Percentage (%)", fontsize=11)
+    ax.set_title("Figure 2: Sentiment Composition by Country\n(100% Stacked Bar Chart)", fontsize=13, fontweight="bold")
+    ax.legend(loc="upper right")
+    ax.set_ylim(0, 100)
+    
+    plt.tight_layout()
+    plt.savefig(output_dir / "sentiment_composition.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: sentiment_composition.png")
+
+
+def plot_text_volume_by_country(df, output_dir, min_target=MIN_TEXT_PER_COUNTRY):
+    """Figure 3: Text Samples Collected by Country"""
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    counts = df.groupby("country").size().sort_values(ascending=False)
+    
+    bars = ax.bar(counts.index, counts.values, color="#3498db", edgecolor="black", linewidth=0.5)
+    
+    # Add minimum target line
+    ax.axhline(min_target, color="#e74c3c", linewidth=2, linestyle="--", label=f"Target: {min_target}")
+    
+    ax.set_xlabel("Country", fontsize=11)
+    ax.set_ylabel("Number of Text Records", fontsize=11)
+    ax.set_title("Figure 3: Text Samples Collected by Country\n(Red line = minimum target)", fontsize=13, fontweight="bold")
+    ax.legend()
+    
+    plt.xticks(rotation=45, ha="right")
+    
+    # Add value labels on bars
+    for bar, val in zip(bars, counts.values):
+        ax.text(bar.get_x() + bar.get_width()/2, val + 0.5, str(int(val)), 
+                ha="center", va="bottom", fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(output_dir / "text_volume_by_country.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: text_volume_by_country.png")
+
+
+def plot_keyword_heatmap(kw_df, output_dir):
+    """Figure 4: Design Vocabulary Distribution Heatmap"""
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
     # Normalize per row so countries with more text don't dominate
     kw_norm = kw_df.div(kw_df.sum(axis=1), axis=0)
+    
     sns.heatmap(kw_norm, annot=True, fmt=".2f", cmap="YlOrRd",
                 linewidths=0.5, ax=ax)
-    ax.set_title("Design Vocabulary Distribution by Country\n(normalized)", fontsize=13)
+    ax.set_title("Figure 4: Design Vocabulary Distribution by Country\n(Normalized by row)", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Vocabulary Category", fontsize=11)
+    ax.set_ylabel("Country", fontsize=11)
+    
     plt.tight_layout()
-    plt.savefig("output/keyword_heatmap.png", dpi=150)
-    plt.show()
+    plt.savefig(output_dir / "keyword_heatmap.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: keyword_heatmap.png")
+
+
+def plot_sentiment_confidence_distribution(df, output_dir):
+    """Figure 5: Sentiment Confidence Distribution"""
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    countries = df["country"].unique()
+    
+    # Box plot of confidence by country
+    data_to_plot = [df[df["country"] == c]["confidence"].values for c in countries if len(df[df["country"] == c]) > 0]
+    valid_countries = [c for c in countries if len(df[df["country"] == c]) > 0]
+    
+    bp = ax.boxplot(data_to_plot, labels=valid_countries, patch_artist=True)
+    
+    # Color boxes
+    colors = plt.cm.Set3(range(len(valid_countries)))
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+    
+    ax.set_xlabel("Country", fontsize=11)
+    ax.set_ylabel("Model Confidence Score", fontsize=11)
+    ax.set_title("Figure 5: Sentiment Classification Confidence by Country", fontsize=13, fontweight="bold")
+    
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.savefig(output_dir / "confidence_distribution.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: confidence_distribution.png")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run():
-    import os
-    os.makedirs("output", exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load scraped data
-    df = pd.read_csv("/data/text_raw.csv")
+    df = pd.read_csv(TEXT_CSV)
     print(f"Loaded {len(df)} text records")
 
     # Tag countries
     df["country"] = df.apply(infer_country, axis=1)
-    print(f"Country distribution:\n{df['country'].value_counts().to_string()}\n")
+    print(f"\nCountry distribution:\n{df['country'].value_counts().to_string()}\n")
 
     # Drop unknowns (can't compare them)
     df = df[df["country"] != "unknown"]
+    print(f"After removing unknowns: {len(df)} records")
 
     # Run sentiment
     sentiment_pipe = load_sentiment_model()
@@ -202,25 +339,41 @@ def run():
     df = pd.concat([df.reset_index(drop=True), scores_df], axis=1)
 
     # Save intermediate
-    df.to_csv("/data/text_with_sentiment.csv", index=False)
+    df.to_csv(SENTIMENT_CSV, index=False)
+    print(f"\n✓ Saved sentiment data to {SENTIMENT_CSV}")
 
     # Aggregate
     print("\n=== Sentiment Summary ===")
     summary = compute_weighted_sentiment(df)
     print(summary.to_string())
-    summary.to_csv("output/sentiment_summary.csv")
+    summary.to_csv(OUTPUT_DIR / "sentiment_summary.csv")
 
     # Keyword analysis
     print("\n=== Design Vocabulary ===")
     kw_df = keyword_frequency_by_country(df)
     print(kw_df.to_string())
-    kw_df.to_csv("output/keyword_frequency.csv")
+    kw_df.to_csv(OUTPUT_DIR / "keyword_frequency.csv")
 
-    # Plots
-    plot_sentiment_by_country(summary)
-    plot_keyword_heatmap(kw_df)
+    # ── Generate Visualizations ─────────────────────────────────────────────
+    print("\n=== Generating Visualizations ===")
+    
+    plot_sentiment_by_country(summary, OUTPUT_DIR)
+    plot_sentiment_composition(df, OUTPUT_DIR)
+    plot_text_volume_by_country(df, OUTPUT_DIR)
+    plot_keyword_heatmap(kw_df, OUTPUT_DIR)
+    plot_sentiment_confidence_distribution(df, OUTPUT_DIR)
 
-    print("\n✓ Sentiment analysis complete")
+    print("\n" + "=" * 50)
+    print("✓ Sentiment Analysis Complete")
+    print("=" * 50)
+    print(f"\nGenerated 5 visualization figures:")
+    print("  • Figure 1: sentiment_by_country.png")
+    print("  • Figure 2: sentiment_composition.png")
+    print("  • Figure 3: text_volume_by_country.png")
+    print("  • Figure 4: keyword_heatmap.png")
+    print("  • Figure 5: confidence_distribution.png")
+    print(f"\nAll outputs saved to: {OUTPUT_DIR}")
+    print("\nNext: run 04_image_processing.py")
 
 
 if __name__ == "__main__":
