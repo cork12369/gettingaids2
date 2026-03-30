@@ -56,7 +56,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <html><head><title>Manhole Cover Pipeline</title>
 <style>*{box-sizing:border-box}body{font-family:monospace;background:linear-gradient(135deg,#1a1a2b,#0d1117);color:#e6edf3;min-height:100vh;margin:0}
 .container{max-width:1400px;margin:0 auto;padding:20px}header{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:15px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
-header h1{color:#58a6ff;margin:0;font-size:20px}.auth-btn{background:transparent;border:1px solid #f85149;color:#f85149;padding:5px 10px;border-radius:4px;cursor:pointer}
+header h1{color:#58a6ff;margin:0;font-size:20px}.header-actions{display:flex;gap:10px}.auth-btn{background:transparent;border:1px solid #f85149;color:#f85149;padding:5px 10px;border-radius:4px;cursor:pointer}.admin-toggle-btn{background:transparent;border:1px solid #d29922;color:#d29922;padding:5px 10px;border-radius:4px;cursor:pointer}
 .toolbar{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px;margin-bottom:20px;display:flex;flex-wrap:wrap;gap:10px}
 .toolbar-btn{background:#238636;color:white;border:none;border-radius:4px;padding:8px 16px;cursor:pointer}
 .toolbar-btn:hover{background:#2ea043}.toolbar-btn.active{background:#58a6ff}
@@ -77,7 +77,7 @@ header h1{color:#58a6ff;margin:0;font-size:20px}.auth-btn{background:transparent
 .btn-soft-reset{background:#d29922}.btn-soft-reset:hover{background:#e3b341}
 .output-section{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:15px;margin-top:20px}
 .output-section h3{color:#8b949e;margin:0 0 10px}.output-section pre{color:#c9d1d9;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:300px}
-.admin-section{background:#161b22;border:2px solid #f85149;border-radius:8px;padding:20px;margin-top:20px}
+.admin-section{background:#161b22;border:2px solid #f85149;border-radius:8px;padding:20px;margin-top:20px;display:none}
 .admin-section h3{color:#f85149;margin:0 0 15px;border-bottom:1px solid #30363d;padding-bottom:10px}
 .admin-section .warning{color:#d29922;font-size:12px;margin-bottom:15px}
 .admin-grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px}
@@ -86,7 +86,7 @@ header h1{color:#58a6ff;margin:0;font-size:20px}.auth-btn{background:transparent
 .pipeline-status .running{color:#238636}.pipeline-status .idle{color:#8b949e}
 .pipeline-status .script{color:#58a6ff}</style>
 </head><body><div class="container">
-<header><h1>Manhole Cover Pipeline</h1><form action="/logout" method="get"><button class="auth-btn">Logout</button></form></header>
+<header><h1>Manhole Cover Pipeline</h1><div class="header-actions"><button class="admin-toggle-btn" onclick="toggleAdminPanel()">⚙️ Admin</button><form action="/logout" method="get"><button class="auth-btn">Logout</button></form></div></header>
 <div class="toolbar"><button class="toolbar-btn active" onclick="showGraph('sentiment')">Sentiment</button>
 <button class="toolbar-btn" onclick="showGraph('images')">Images</button>
 <button class="toolbar-btn" onclick="showGraph('cross')">Cross Analysis</button>
@@ -133,6 +133,7 @@ function adminResetAndRerun(){var password=document.getElementById('admin-passwo
 var msgEl=document.getElementById('admin-message');var output=document.getElementById('output-log');msgEl.innerHTML='Resetting and starting pipeline...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:password,reset_type:'full'})}).then(r=>r.json()).then(data=>{if(data.success){msgEl.innerHTML='<span style="color:#238636;">✓ Reset complete. Starting pipeline...</span>';output.textContent+='Admin full reset: deleted '+data.deleted_count+' items\\n';setTimeout(function(){runAll();},500);}else{msgEl.innerHTML='<span style="color:#f85149;">✗ '+data.message+'</span>';}}).catch(e=>{msgEl.innerHTML='<span style="color:#f85149;">Error: '+e+'</span>';});}
 setInterval(function(){fetch('/counts').then(r=>r.json()).then(data=>{if(data.scrape)updateStatus('scrape','completed',data.scrape);if(data.sentiment)updateStatus('sentiment','completed',data.sentiment);if(data.images)updateStatus('images','completed',data.images);if(data.cross)updateStatus('cross','completed',data.cross);});updatePipelineStatus();},2000);
 setTimeout(updatePipelineStatus,100);
+function toggleAdminPanel(){var section=document.querySelector('.admin-section');section.style.display=section.style.display==='none'?'block':'none';}
 </script></body></html>"""
 
 # Enhanced pipeline state tracking
