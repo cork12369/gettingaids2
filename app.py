@@ -233,7 +233,8 @@ header h1{color:#58a6ff;margin:0;font-size:20px}.header-actions{display:flex;gap
 <button class="btn btn-soft-reset" onclick="adminReset('soft')">🔓 Soft Reset</button>
 <button class="btn btn-admin" onclick="adminReset('analysis')">🗑️ Reset Analysis</button>
 <button class="btn btn-admin" onclick="adminReset('full')">⚠️ Full Reset</button>
-<button class="btn btn-admin" onclick="adminResetAndRerun()">🔄 Reset & Rerun</button></div>
+<button class="btn btn-admin" onclick="adminResetAndRerun()">🔄 Reset & Rerun</button>
+<button class="btn" onclick="showLogs()" style="background:#388bfd">📋 View Logs</button></div>
 <div id="admin-message" style="margin-top:10px;font-size:12px;color:#8b949e;"></div></div>
 
 <div class="output-section"><h3>Output Log</h3><pre id="output-log">Ready. Run a pipeline stage to see output.</pre></div></div>
@@ -243,12 +244,13 @@ function showGraph(t){document.querySelectorAll('.graph-panel').forEach(p=>p.cla
 function loadGraphs(t){var P={sentiment:['sentiment_by_country.png','sentiment_composition.png','text_volume_by_country.png','keyword_heatmap.png','confidence_distribution.png'],images:['image_volume_by_country.png','country_image_distribution.png','source_distribution.png','image_resolution_distribution.png'],cross:['cross_analysis_visualizations/text_vs_image_by_country.png','cross_analysis_visualizations/sentiment_vs_image_volume.png','cross_analysis_visualizations/combined_country_summary.png','cross_analysis_visualizations/balance_ratio_chart.png','cross_analysis_visualizations/coverage_summary.png','cross_analysis_visualizations/sentiment_heatmap.png'],confusion:['confusion_matrix.png']};var c=document.getElementById('graphs-'+t);c.innerHTML='';(P[t]||[]).forEach(function(f){var img=document.createElement('img');img.src='/output/'+f;img.style.maxWidth='100%';img.style.margin='10px';img.onerror=function(){img.style.display='none'};c.appendChild(img)});}
 function updateStatus(s,st,c){var card=document.getElementById('status-'+s);if(card){card.querySelector('.count').textContent=c;card.className='status-card '+st;}}
 function updatePipelineStatus(){fetch('/admin/status').then(r=>r.json()).then(d=>{var el=document.getElementById('pipeline-status');if(d.running)el.innerHTML='Pipeline: <span class="running">RUNNING</span> — <span class="script">'+d.script+'</span> ('+d.started_ago+'s)';else el.innerHTML='Pipeline: <span class="idle">IDLE</span>';}).catch(()=>{});}
-function runAll(){runStage('01_scrape_data.py');setTimeout(()=>runStage('03_sentiment_analysis.py'),2000);setTimeout(()=>runStage('04_image_processing.py'),4000);setTimeout(()=>runStage('05_cross_analysis.py'),6000);}
+function runAll(){var stages=['01_scrape_data.py','03_sentiment_analysis.py','04_image_processing.py','05_cross_analysis.py'];var i=0;var out=document.getElementById('output-log');function next(){if(i>=stages.length){out.textContent+='\\n✓ Full pipeline complete!\\n';return;}var s=stages[i];out.textContent+='['+(i+1)+'/'+stages.length+'] Starting '+s+'...\\n';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:s})}).then(r=>r.json()).then(d=>{out.textContent+=d.message+'\\n';if(d.status==='error'){out.textContent+='Aborting pipeline.\\n';return;}i++;pollThenNext();}).catch(e=>{out.textContent+='Error: '+e+'\\n';});}function pollThenNext(){out.textContent+='Waiting for '+stages[i-1]+' to finish...\\n';var tries=0;function p(){tries++;fetch('/admin/status').then(r=>r.json()).then(d=>{if(!d.running){out.textContent+='✓ '+stages[i-1]+' done.\\n';setTimeout(next,1000);}else if(tries>120){out.textContent+='Timeout waiting for '+stages[i-1]+'\\n';}else{setTimeout(p,5000);}}).catch(()=>setTimeout(p,5000));}p();}next();}
 function runStage(script){var out=document.getElementById('output-log');out.textContent+='Starting '+script+'...\\n';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})}).then(r=>r.json()).then(d=>{out.textContent+=d.message+'\\n';}).catch(e=>{out.textContent+='Error: '+e+'\\n';});}
 function adminReset(type){var pw=document.getElementById('admin-password').value;if(!pw){document.getElementById('admin-message').innerHTML='<span style="color:#f85149">Enter admin password</span>';return;}
 var msg=document.getElementById('admin-message');msg.innerHTML='Processing...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,reset_type:type})}).then(r=>r.json()).then(d=>{msg.innerHTML=d.success?'<span style="color:#238636">✓ '+d.message+'</span>':'<span style="color:#f85149">✗ '+d.message+'</span>';document.getElementById('admin-password').value='';}).catch(e=>{msg.innerHTML='<span style="color:#f85149">Error</span>';});}
 function adminResetAndRerun(){var pw=document.getElementById('admin-password').value;if(!pw){document.getElementById('admin-message').innerHTML='<span style="color:#f85149">Enter admin password</span>';return;}
-var msg=document.getElementById('admin-message');msg.innerHTML='Resetting...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,reset_type:'full'})}).then(r=>r.json()).then(d=>{if(d.success){msg.innerHTML='<span style="color:#238636">✓ Reset. Starting pipeline...</span>';setTimeout(runAll,500);}else msg.innerHTML='<span style="color:#f85149">✗ '+d.message+'</span>';}).catch(()=>{});}
+var msg=document.getElementById('admin-message');msg.innerHTML='Resetting...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,reset_type:'full'})}).then(r=>r.json()).then(d=>{if(d.success){msg.innerHTML='<span style="color:#238636">✓ '+d.message+' Starting pipeline sequentially...</span>';document.getElementById('admin-password').value='';setTimeout(runAll,1500);}else msg.innerHTML='<span style="color:#f85149">✗ '+d.message+'</span>';}).catch(()=>{});}
+function showLogs(){var out=document.getElementById('output-log');out.textContent='Fetching logs...\\n';fetch('/admin/logs').then(r=>r.json()).then(d=>{out.textContent='=== Pipeline Logs ===\\n';if(d.logs.length===0)out.textContent+='(no logs yet)\\n';else d.logs.forEach(function(l){out.textContent+=l+'\\n';});out.textContent+='\\nStatus: '+(d.running?'RUNNING ('+d.script+')':'IDLE')+'\\n';}).catch(e=>{out.textContent+='Error fetching logs: '+e+'\\n';});}
 setInterval(()=>{fetch('/counts').then(r=>r.json()).then(d=>{if(d.scrape)updateStatus('scrape','completed',d.scrape);if(d.sentiment)updateStatus('sentiment','completed',d.sentiment);if(d.images)updateStatus('images','completed',d.images);if(d.cross)updateStatus('cross','completed',d.cross);if(d.confusion)updateStatus('confusion','completed','✓');});updatePipelineStatus();},3000);
 setTimeout(updatePipelineStatus,100);
 function toggleAdminPanel(){var s=document.querySelector('.admin-section');s.style.display=s.style.display==='none'?'block':'none';}
@@ -481,28 +483,56 @@ def admin_reset():
     if not _admin_key_valid(d.get("password", "")):
         return jsonify({"success": False, "message": "Invalid admin password"}), 403
     rt = d.get("reset_type", "soft")
+    deleted = []; errors = []; dc = 0
+
+    # Always clear pipeline runtime state
     job_state["running"] = False; job_state["script"] = None; job_state["started_at"] = None
-    deleted = []; dc = 0
-    if rt == "soft":
-        return jsonify({"success": True, "message": "Soft reset complete.", "deleted_count": 0})
-    targets = {"analysis": [DATA_DIR/"text_with_sentiment.csv", DATA_DIR/"image_metadata.csv", OUTPUT_DIR],
-               "full": [DATA_DIR/"text_raw.csv", DATA_DIR/"text_with_sentiment.csv", DATA_DIR/"image_metadata.csv", OUTPUT_DIR, IMAGES_DIR]}
-    for p in targets.get(rt, []):
+    job_state["log"] = []
+
+    def _delete(p):
+        nonlocal dc
         if p.is_file():
             try: p.unlink(); deleted.append(str(p)); dc += 1
-            except: pass
+            except Exception as e: errors.append(f"{p}: {e}")
         elif p.is_dir():
             try:
-                if rt == "full": shutil.rmtree(p); deleted.append(str(p)+"/"); dc += 1
-                else:
-                    for f in p.rglob("*"):
-                        if f.is_file():
-                            try: f.unlink(); deleted.append(str(f)); dc += 1
-                            except: pass
-            except: pass
+                shutil.rmtree(p); deleted.append(str(p)+"/"); dc += 1
+            except Exception as e: errors.append(f"{p}: {e}")
+
+    if rt == "soft":
+        # Soft reset: clear logs + grading session data, keep scraped/raw data
+        _delete(GRADER_ASSIGN)
+        _delete(HUMAN_GRADES)
+        _delete(GRADE_SAMPLE)
+        # Clear output dir contents but keep the folder
+        if OUTPUT_DIR.exists():
+            for f in OUTPUT_DIR.iterdir():
+                _delete(f)
+        msg = f"Soft reset: cleared logs & grading state. Deleted {dc} items."
+        if errors: msg += f" ({len(errors)} errors)"
+        return jsonify({"success": True, "message": msg, "deleted_count": dc,
+                        "deleted_files": deleted[:30], "errors": errors[:5]})
+
+    # Grading files to include in analysis/full reset
+    grading_files = [GRADE_SAMPLE, GRADER_ASSIGN, HUMAN_GRADES]
+
+    targets = {"analysis": [DATA_DIR/"text_with_sentiment.csv", DATA_DIR/"image_metadata.csv", OUTPUT_DIR] + grading_files,
+               "full": [DATA_DIR/"text_raw.csv", DATA_DIR/"text_with_sentiment.csv", DATA_DIR/"image_metadata.csv",
+                        OUTPUT_DIR, IMAGES_DIR] + grading_files}
+    for p in targets.get(rt, []):
+        _delete(p)
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if rt == "full": IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    return jsonify({"success": True, "message": f"{rt.title()} reset. Deleted {dc} items.", "deleted_count": dc, "deleted_files": deleted[:20]})
+    msg = f"{rt.title()} reset. Deleted {dc} items."
+    if errors: msg += f" ({len(errors)} errors)"
+    return jsonify({"success": True, "message": msg, "deleted_count": dc,
+                    "deleted_files": deleted[:30], "errors": errors[:5]})
+
+@app.route("/admin/logs")
+@require_auth
+def admin_logs():
+    return jsonify({"logs": job_state.get("log", []), "running": job_state["running"], "script": job_state["script"]})
 
 @app.route("/run", methods=["POST"])
 @require_auth
