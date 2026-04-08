@@ -17,13 +17,34 @@ limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="m
 ACCESS_KEY = os.environ.get("ACCESS_KEY", "")
 ADMIN_RESET_PASSWORD = os.environ.get("ADMIN_RESET_PASSWORD", "")
 
+# Allowed pipeline scripts (whitelist)
+ALLOWED_SCRIPTS = frozenset([
+    "01_scrape_data.py",
+    "03_sentiment_analysis.py", 
+    "04_image_processing.py",
+    "05_cross_analysis.py",
+    "06_confusion_matrix.py"
+])
+
+# Thread-safe job state management
+_job_lock = threading.Lock()
+job_state = {"running": False, "script": None, "started_at": None, "log": [], "thread": None}
+MAX_LOG_ENTRIES = 1000  # Limit log growth to prevent memory issues
+
 def _key_valid(p):
     if not ACCESS_KEY: return False
     return hmac.compare_digest(p.strip().upper().encode(), ACCESS_KEY.strip().upper().encode())
 
 def _admin_key_valid(p):
     if not ADMIN_RESET_PASSWORD: return False
+    # Strip whitespace from both for consistency
     return hmac.compare_digest(p.strip().encode(), ADMIN_RESET_PASSWORD.strip().encode())
+
+def _is_script_allowed(script):
+    """Validate script against whitelist to prevent path traversal attacks."""
+    if not script or ".." in script or "/" in script or "\\" in script:
+        return False
+    return script in ALLOWED_SCRIPTS
 
 def require_auth(f):
     @wraps(f)
@@ -42,8 +63,6 @@ GRADER_ASSIGN = DATA_DIR / "grader_assignments.csv"
 HUMAN_GRADES = DATA_DIR / "human_grades.csv"
 CHUNK_SIZE = 10
 SAMPLE_TARGET = 2000
-
-job_state = {"running": False, "script": None, "started_at": None, "log": [], "thread": None}
 
 # ── Grading Helpers ───────────────────────────────────────────────────────────
 
@@ -471,23 +490,29 @@ def get_counts():
 @app.route("/admin/status")
 @require_auth
 def admin_status():
-    sa = 0
-    if job_state["running"] and job_state["started_at"]:
-        sa = int(time.time() - job_state["started_at"])
-    return jsonify({"running": job_state["running"], "script": job_state["script"], "started_ago": sa})
+    with _job_lock:
+        sa = 0
+        if job_state["running"] and job_state["started_at"]:
+            sa = int(time.time() - job_state["started_at"])
+        return jsonify({"running": job_state["running"], "script": job_state["script"], "started_ago": sa})
 
 @app.route("/admin/reset", methods=["POST"])
+@limiter.limit("5 per minute")  # Rate limit admin reset operations
 @require_auth
 def admin_reset():
     d = request.get_json() or {}
     if not _admin_key_valid(d.get("password", "")):
         return jsonify({"success": False, "message": "Invalid admin password"}), 403
     rt = d.get("reset_type", "soft")
+    # Validate reset_type against whitelist to prevent path traversal
+    if rt not in ("soft", "analysis", "full"):
+        return jsonify({"success": False, "message": "Invalid reset type"}), 400
     deleted = []; errors = []; dc = 0
 
-    # Always clear pipeline runtime state
-    job_state["running"] = False; job_state["script"] = None; job_state["started_at"] = None
-    job_state["log"] = []
+    # Thread-safe state clearing
+    with _job_lock:
+        job_state["running"] = False; job_state["script"] = None; job_state["started_at"] = None
+        job_state["log"] = []
 
     def _delete(p):
         nonlocal dc
@@ -539,18 +564,43 @@ def admin_logs():
 def run_stage():
     d = request.get_json() or {}
     script = d.get("script", "01_scrape_data.py")
-    if job_state["running"]:
-        return jsonify({"status": "error", "message": "Pipeline already running"})
+    
+    # Validate script against whitelist (security fix for path traversal)
+    if not _is_script_allowed(script):
+        return jsonify({"status": "error", "message": "Invalid or disallowed script"})
+    
+    # Thread-safe check for running state
+    with _job_lock:
+        if job_state["running"]:
+            return jsonify({"status": "error", "message": "Pipeline already running"})
+        job_state["running"] = True
+        job_state["script"] = script
+        job_state["started_at"] = time.time()
+    
     def go():
-        job_state["running"] = True; job_state["script"] = script; job_state["started_at"] = time.time()
+        with _job_lock:
+            running_state = job_state["running"]
+            script_name = job_state["script"]
+        
         try:
-            r = subprocess.run(["python", script], capture_output=True, text=True, timeout=600)
-            job_state["log"].append(f"Done {script}: exit {r.returncode}")
+            r = subprocess.run(["python", script_name], capture_output=True, text=True, timeout=600)
+            log_entry = f"Done {script_name}: exit {r.returncode}"
         except Exception as e:
-            job_state["log"].append(f"Error {script}: {e}")
+            log_entry = f"Error {script_name}: {e}"
         finally:
-            job_state["running"] = False; job_state["script"] = None; job_state["started_at"] = None
-    t = threading.Thread(target=go); job_state["thread"] = t; t.start()
+            with _job_lock:
+                job_state["running"] = False
+                job_state["script"] = None
+                job_state["started_at"] = None
+                # Truncate logs to prevent memory leak (max 1000 entries)
+                if len(job_state["log"]) >= MAX_LOG_ENTRIES:
+                    job_state["log"] = job_state["log"][-MAX_LOG_ENTRIES:]
+                job_state["log"].append(log_entry)
+    
+    t = threading.Thread(target=go)
+    with _job_lock:
+        job_state["thread"] = t
+    t.start()
     return jsonify({"status": "started", "message": f"Started {script}", "script": script})
 
 @app.route("/output/<path:path>")
