@@ -9,6 +9,7 @@ Install: pip install duckduckgo-search requests beautifulsoup4 pillow pandas
 No API keys required.
 """
 
+import os
 import time
 import random
 import requests
@@ -65,15 +66,15 @@ TEXT_CSV     = Path("/data/text_raw.csv")
 IMG_META_CSV = Path("/data/image_metadata.csv")
 
 MIN_IMG_SIZE      = 200    # px — skip thumbnails
-MAX_TEXT_ITEMS    = 80     # per query
-MAX_IMG_ITEMS     = 60     # per query
+MAX_TEXT_ITEMS    = 120    # per query
+MAX_IMG_ITEMS     = 80     # per query
 SCRAPE_DELAY      = (1, 3) # random sleep range (seconds) — be polite
 
 # Balancing config
-MIN_TEXT_PER_COUNTRY = 10   # target minimum text records per country
-MAX_TEXT_PER_COUNTRY = 100  # cap to prevent over-representation
-MIN_IMG_PER_COUNTRY  = 15   # target minimum images per country
-MAX_IMG_PER_COUNTRY  = 80   # cap to prevent over-representation
+MIN_TEXT_PER_COUNTRY = 15   # target minimum text records per country
+MAX_TEXT_PER_COUNTRY = 150  # cap to prevent over-representation
+MIN_IMG_PER_COUNTRY  = 20   # target minimum images per country
+MAX_IMG_PER_COUNTRY  = 100  # cap to prevent over-representation
 
 # ── Target Image Count ───────────────────────────────────────────────────────────
 # This is the target we try to hit for all countries
@@ -708,6 +709,293 @@ def resolve_wikimedia_url(title: str) -> str | None:
         return None
 
 
+# ── YouTube Scraping ──────────────────────────────────────────────────────────
+
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+
+YOUTUBE_QUERIES = {
+    "japan":     ["japanese manhole cover art", "pokefuta pokemon manhole japan", "マンホール カバー アート 日本"],
+    "singapore": ["singapore manhole cover design", "singapore drain cover art"],
+    "uk":        ["london manhole cover art", "british drain cover design history"],
+    "usa":       ["new york manhole cover", "american manhole cover art design"],
+    "germany":   ["kanaldeckel deutschland kunst", "german manhole cover design"],
+    "france":    ["regard fonte paris egout", "french manhole cover art"],
+    "india":     ["india manhole cover design", "mumbai drain cover art"],
+    "italy":     ["chiusino italiano design", "italian manhole cover art"],
+    "spain":     ["tapas de registro españa", "spanish manhole cover design"],
+    "australia": ["australia manhole cover", "sydney drain cover design"],
+    "canada":    ["canada manhole cover design", "toronto drain cover art"],
+    "brazil":    ["boca de lobo brasil design", "brazilian manhole cover art"],
+    "netherlands": ["nederland riooldeksel design", "dutch manhole cover art"],
+    "south_korea": ["korea manhole cover design", "seoul drain cover art"],
+    "thailand":  ["thailand manhole cover", "bangkok drain cover design"],
+    "mexico":    ["alcantarilla mexico arte", "mexican manhole cover design"],
+}
+
+
+def scrape_youtube(country: str, queries: list[str], max_results: int = 10) -> tuple[list[dict], list[dict]]:
+    """
+    Scrape YouTube via Data API v3 for video titles/descriptions (text)
+    and thumbnails (images). Returns (text_records, image_records).
+    Gracefully skips if YOUTUBE_API_KEY is not set.
+    """
+    text_results = []
+    image_results = []
+
+    if not YOUTUBE_API_KEY:
+        logger.info(f"YouTube: skipping {country} (no YOUTUBE_API_KEY set)")
+        return text_results, image_results
+
+    for query in queries:
+        logger.info(f"YouTube search: '{query}' [{country}]")
+        try:
+            resp = requests.get(
+                "https://www.googleapis.com/youtube/v3/search",
+                params={
+                    "part": "snippet",
+                    "q": query,
+                    "type": "video",
+                    "maxResults": max_results,
+                    "key": YOUTUBE_API_KEY,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("items", []):
+                snippet = item.get("snippet", {})
+                video_id = item.get("id", {}).get("videoId", "")
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+                # Text record: title + description
+                title = snippet.get("title", "")
+                description = snippet.get("description", "")
+                combined = f"{title}. {description}".strip()
+                if len(combined) > 50:
+                    text_results.append({
+                        "country": country,
+                        "query":   query,
+                        "source":  "youtube",
+                        "url":     video_url,
+                        "text":    combined[:3000],
+                        "score":   2,
+                    })
+
+                # Image record: high-res thumbnail
+                thumbnails = snippet.get("thumbnails", {})
+                for thumb_key in ["maxres", "high", "standard"]:
+                    if thumb_key in thumbnails:
+                        thumb_url = thumbnails[thumb_key].get("url", "")
+                        if thumb_url:
+                            image_results.append({
+                                "country": country,
+                                "query":   query,
+                                "source":  "youtube_thumbnail",
+                                "url":     thumb_url,
+                                "title":   title,
+                            })
+                        break
+
+            sleep()
+
+        except Exception as e:
+            logger.error(f"YouTube API error for '{query}': {e}")
+            sleep()
+
+    return text_results, image_results
+
+
+# ── Openverse API Scraping (FREE, no key needed) ─────────────────────────────
+
+OPENVERSE_QUERIES = {
+    "japan":     ["japanese manhole cover", "pokefuta pokemon lid japan", "manhole art japan"],
+    "singapore": ["singapore manhole cover", "singapore drain cover"],
+    "uk":        ["london manhole cover", "british drain cover"],
+    "usa":       ["new york manhole cover", "american sewer cover"],
+    "germany":   ["kanaldeckel germany", "german manhole cover"],
+    "france":    ["paris manhole cover", "french utility cover"],
+    "india":     ["india manhole cover", "mumbai drain cover"],
+    "italy":     ["italian manhole cover", "roma chiusino"],
+    "spain":     ["spanish manhole cover", "madrid drain cover"],
+    "australia": ["australia manhole cover", "sydney drain cover"],
+    "canada":    ["canada manhole cover", "toronto drain cover"],
+    "brazil":    ["brazil manhole cover", "boca de lobo"],
+    "netherlands": ["netherlands manhole cover", "dutch drain cover"],
+    "south_korea": ["korea manhole cover", "seoul drain cover"],
+    "thailand":  ["thailand manhole cover", "bangkok drain cover"],
+    "mexico":    ["mexico manhole cover", "alcantarilla mexico"],
+}
+
+
+def scrape_openverse(country: str, queries: list[str], per_page: int = 20) -> list[dict]:
+    """
+    Scrape Openverse API (formerly Creative Commons Search).
+    Completely free, no API key, no rate limits.
+    Returns image records with direct URLs to CC-licensed images.
+    """
+    results = []
+    api_url = "https://api.openverse.org/v1/images/"
+
+    for query in queries:
+        logger.info(f"Openverse: '{query}' [{country}]")
+        try:
+            resp = requests.get(
+                api_url,
+                params={
+                    "q": query,
+                    "page_size": per_page,
+                    "mature": "false",
+                },
+                headers={"User-Agent": "Mozilla/5.0 (compatible; research-scraper/1.0)"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("results", []):
+                img_url = item.get("url") or item.get("thumbnail", "")
+                if not img_url:
+                    continue
+                results.append({
+                    "country": country,
+                    "query":   query,
+                    "source":  "openverse",
+                    "url":     img_url,
+                    "title":   item.get("title", ""),
+                })
+
+            sleep()
+
+        except Exception as e:
+            logger.error(f"Openverse error for '{query}': {e}")
+            sleep()
+
+    return results
+
+
+# ── Reddit JSON Scraping (FREE, no auth needed) ──────────────────────────────
+
+REDDIT_SUBREDDITS = [
+    "manhole",
+    "manholecovers",
+    "infrastructure",
+    "urbanexploration",
+    "streetart",
+    "thingsfittingperfectly",
+    "mildlyinteresting",
+    "designporn",
+    "ThatsInsane",
+]
+
+# Search queries per country for Reddit
+REDDIT_QUERIES = {
+    "japan":     ["japan manhole", "pokefuta", "japanese manhole cover", "pokemon manhole"],
+    "singapore": ["singapore manhole", "singapore drain cover"],
+    "uk":        ["london manhole", "uk manhole cover", "british drain cover"],
+    "usa":       ["new york manhole", "american manhole cover"],
+    "germany":   ["germany manhole", "kanaldeckel"],
+    "france":    ["paris manhole", "french manhole cover"],
+    "india":     ["india manhole", "mumbai drain cover"],
+    "italy":     ["italy manhole", "italian drain cover"],
+    "spain":     ["spain manhole", "spanish drain cover"],
+    "australia": ["australia manhole", "sydney manhole cover"],
+    "canada":    ["canada manhole", "toronto manhole cover"],
+    "brazil":    ["brazil manhole", "boca de lobo"],
+    "netherlands": ["netherlands manhole", "dutch manhole cover"],
+    "south_korea": ["korea manhole", "seoul manhole cover"],
+    "thailand":  ["thailand manhole", "bangkok manhole"],
+    "mexico":    ["mexico manhole", "mexican drain cover"],
+}
+
+
+def scrape_reddit(country: str, queries: list[str], limit: int = 25) -> tuple[list[dict], list[dict]]:
+    """
+    Scrape Reddit via .json endpoint (no auth needed).
+    Returns (text_records, image_records).
+    Searches across relevant subreddits for posts matching queries.
+    """
+    text_results = []
+    image_results = []
+
+    for query in queries:
+        # Search across top subreddits only (manage rate limits)
+        for subreddit in REDDIT_SUBREDDITS[:3]:
+            search_url = f"https://www.reddit.com/r/{subreddit}/search.json"
+            try:
+                resp = requests.get(
+                    search_url,
+                    params={
+                        "q": query,
+                        "limit": limit,
+                        "sort": "relevance",
+                        "t": "all",
+                        "restrict_sr": "on",
+                    },
+                    headers={"User-Agent": "research-scraper/1.0 (educational project)"},
+                    timeout=REQUEST_TIMEOUT,
+                )
+                if resp.status_code == 429:
+                    logger.warning("Reddit rate limited, backing off...")
+                    time.sleep(5)
+                    continue
+                resp.raise_for_status()
+
+                data = resp.json()
+                posts = data.get("data", {}).get("children", [])
+
+                for post in posts:
+                    post_data = post.get("data", {})
+                    title = post_data.get("title", "")
+                    selftext = post_data.get("selftext", "")
+                    post_url = f"https://reddit.com{post_data.get('permalink', '')}"
+                    url_overridden = post_data.get("url_overridden_by_dest", "")
+                    thumbnail = post_data.get("thumbnail", "")
+                    is_video = post_data.get("is_video", False)
+
+                    # Text record
+                    combined = f"{title}. {selftext}".strip()
+                    if len(combined) > 50 and not is_video:
+                        text_results.append({
+                            "country": country,
+                            "query":   query,
+                            "source":  "reddit",
+                            "url":     post_url,
+                            "text":    combined[:3000],
+                            "score":   2,
+                        })
+
+                    # Image record: direct image links
+                    if url_overridden and any(
+                        url_overridden.lower().endswith(ext)
+                        for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+                    ):
+                        image_results.append({
+                            "country": country,
+                            "query":   query,
+                            "source":  "reddit",
+                            "url":     url_overridden,
+                            "title":   title,
+                        })
+                    elif thumbnail and thumbnail.startswith("http") and not is_video:
+                        image_results.append({
+                            "country": country,
+                            "query":   query,
+                            "source":  "reddit_thumbnail",
+                            "url":     thumbnail,
+                            "title":   title,
+                        })
+
+                # Reddit asks for 1 req/sec for bots
+                time.sleep(1.5)
+
+            except Exception as e:
+                logger.error(f"Reddit error r/{subreddit} '{query}': {e}")
+                sleep()
+
+    return text_results, image_results
+
+
 # ── Image Downloader ──────────────────────────────────────────────────────────
 
 def download_images(metadata_list: list[dict]) -> list[dict]:
@@ -775,6 +1063,27 @@ def run():
         all_text.extend(items)
         logger.info(f"  → {len(items)} text records")
 
+    # ── YouTube scraping ───────────────────────────────────────────────────────
+    if YOUTUBE_API_KEY:
+        logger.info("=== YOUTUBE SCRAPING ===")
+        for country, queries in YOUTUBE_QUERIES.items():
+            logger.info(f"[{country.upper()}] YouTube")
+            yt_text, yt_images = scrape_youtube(country, queries)
+            all_text.extend(yt_text)
+            all_images.extend(yt_images)
+            logger.info(f"  → {len(yt_text)} text, {len(yt_images)} thumbnails")
+    else:
+        logger.info("=== YOUTUBE: skipped (no YOUTUBE_API_KEY) ===")
+
+    # ── Reddit scraping (free, no auth) ────────────────────────────────────────
+    logger.info("=== REDDIT SCRAPING ===")
+    for country, queries in REDDIT_QUERIES.items():
+        logger.info(f"[{country.upper()}] Reddit")
+        rd_text, rd_images = scrape_reddit(country, queries)
+        all_text.extend(rd_text)
+        all_images.extend(rd_images)
+        logger.info(f"  → {len(rd_text)} text, {len(rd_images)} images")
+
     # Balance text records
     logger.info("=== BALANCING TEXT RECORDS ===")
     all_text = balance_text_records(all_text)
@@ -808,6 +1117,14 @@ def run():
         items = scrape_wikimedia(country, category)
         all_images.extend(items)
         logger.info(f"  → {len(items)} Wikimedia images for {country}")
+
+    # Openverse (free, no key needed)
+    logger.info("=== OPENVERSE SCRAPING ===")
+    for country, queries in OPENVERSE_QUERIES.items():
+        logger.info(f"[{country.upper()}] Openverse")
+        items = scrape_openverse(country, queries)
+        all_images.extend(items)
+        logger.info(f"  → {len(items)} Openverse images")
 
     # Balance image candidates (with fallback sources)
     logger.info("=== BALANCING IMAGE CANDIDATES ===")

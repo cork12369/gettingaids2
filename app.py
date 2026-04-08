@@ -185,66 +185,188 @@ button{width:100%;background:#238636;color:white;border:none;border-radius:4px;p
 </div></body></html>"""
 
 DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>Manhole Cover Pipeline</title>
-<style>*{box-sizing:border-box}body{font-family:monospace;background:linear-gradient(135deg,#1a1a2b,#0d1117);color:#e6edf3;min-height:100vh;margin:0}
-.container{max-width:1400px;margin:0 auto;padding:20px}header{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:15px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
-header h1{color:#58a6ff;margin:0;font-size:20px}.header-actions{display:flex;gap:10px}
-.auth-btn{background:transparent;border:1px solid #f85149;color:#f85149;padding:5px 10px;border-radius:4px;cursor:pointer}
-.admin-toggle-btn{background:transparent;border:1px solid #d29922;color:#d29922;padding:5px 10px;border-radius:4px;cursor:pointer}
-.toolbar{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px;margin-bottom:20px;display:flex;flex-wrap:wrap;gap:10px}
-.toolbar-btn{background:#238636;color:white;border:none;border-radius:4px;padding:8px 16px;cursor:pointer}
-.toolbar-btn:hover{background:#2ea043}.toolbar-btn.active{background:#58a6ff}
-.graph-panel{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin-bottom:20px;display:none}
-.graph-panel.active{display:block}.graph-panel h3{color:#58a6ff;margin:0 0 15px;border-bottom:1px solid #30363d;padding-bottom:10px}
-.graph-container{text-align:center}.graph-container img{max-width:100%;border-radius:4px;margin:10px 0}
-.no-data{color:#8b949e;font-style:italic;padding:40px}
-.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin-bottom:20px}
-.status-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:15px;text-align:center}
-.status-card h3{color:#8b949e;margin:0 0 8px;font-size:13px}.status-card .count{font-size:28px;font-weight:bold;color:#58a6ff}
-.btn-grid{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:10px}
-.btn{background:#238636;color:white;border:none;border-radius:6px;padding:12px 24px;cursor:pointer;font-size:14px}
-.btn:hover{background:#2ea043}.btn-run-all{background:#1f6feb}.btn-run-all:hover{background:#388bfd}
-.btn-admin{background:#f85149}.btn-admin:hover{background:#da3633}.btn-soft-reset{background:#d29922}.btn-soft-reset:hover{background:#e3b341}
-.btn-grade{background:#8b5cf6}.btn-grade:hover{background:#7c3aed}
-.output-section{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:15px;margin-top:20px}
-.output-section h3{color:#8b949e;margin:0 0 10px}.output-section pre{color:#c9d1d9;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:300px}
-.admin-section{background:#161b22;border:2px solid #f85149;border-radius:8px;padding:20px;margin-top:20px;display:none}
-.admin-section h3{color:#f85149;margin:0 0 15px;border-bottom:1px solid #30363d;padding-bottom:10px}
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:linear-gradient(160deg,#0d1117 0%,#161b22 50%,#0d1117 100%);color:#e6edf3;min-height:100vh}
+.container{max-width:1600px;margin:0 auto;padding:20px}
+
+/* ── Header ── */
+header{background:linear-gradient(135deg,#161b22 0%,#1c2333 100%);border:1px solid #30363d;border-radius:12px;padding:16px 24px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 24px rgba(0,0,0,0.3)}
+header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
+.header-actions{display:flex;gap:8px;align-items:center}
+.auth-btn{background:transparent;border:1px solid #f85149;color:#f85149;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .2s}
+.auth-btn:hover{background:#f8514920}
+.admin-toggle-btn{background:transparent;border:1px solid #d29922;color:#d29922;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all .2s}
+.admin-toggle-btn:hover{background:#d2992220}
+.nav-link{background:#8b5cf620;border:1px solid #8b5cf6;color:#c4b5fd;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;text-decoration:none;transition:all .2s}
+.nav-link:hover{background:#8b5cf640;color:white}
+
+/* ── Status Strip ── */
+.status-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px}
+.status-card{background:linear-gradient(135deg,#161b22,#1c2333);border:1px solid #30363d;border-radius:10px;padding:16px;text-align:center;transition:all .3s;position:relative;overflow:hidden}
+.status-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:#30363d;transition:background .3s}
+.status-card.completed::before{background:linear-gradient(90deg,#238636,#2ea043)}
+.status-card h3{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:600}
+.status-card .count{font-size:26px;font-weight:700;color:#58a6ff}
+.status-card.completed .count{color:#3fb950}
+
+/* ── Filter Bar ── */
+.filter-bar{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 16px;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.filter-bar .label{color:#8b949e;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-right:8px}
+.filter-btn{background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;padding:7px 18px;cursor:pointer;font-size:13px;font-weight:500;transition:all .2s}
+.filter-btn:hover{background:#30363d;color:#e6edf3}
+.filter-btn.active{background:linear-gradient(135deg,#1f6feb,#388bfd);color:white;border-color:#1f6feb;box-shadow:0 2px 12px rgba(31,111,235,0.3)}
+
+/* ── Section Headers ── */
+.section-header{display:flex;align-items:center;gap:12px;margin:28px 0 16px;padding-bottom:10px;border-bottom:1px solid #21262d}
+.section-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.section-icon.sentiment{background:linear-gradient(135deg,#1f6feb40,#388bfd20);border:1px solid #1f6feb60}
+.section-icon.images{background:linear-gradient(135deg,#23863640,#2ea04320);border:1px solid #23863660}
+.section-icon.cross{background:linear-gradient(135deg,#d2992240,#e3b34120);border:1px solid #d2992260}
+.section-icon.confusion{background:linear-gradient(135deg,#8b5cf640,#7c3aed20);border:1px solid #8b5cf660}
+.section-title{font-size:16px;font-weight:600;color:#e6edf3}
+.section-subtitle{font-size:12px;color:#8b949e;margin-top:2px}
+
+/* ── Graph Grid ── */
+.graph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(480px,1fr));gap:16px;margin-bottom:8px}
+@media(max-width:560px){.graph-grid{grid-template-columns:1fr}}
+.graph-card{background:linear-gradient(135deg,#161b22,#1c2333);border:1px solid #30363d;border-radius:10px;overflow:hidden;transition:all .3s}
+.graph-card:hover{border-color:#484f58;box-shadow:0 4px 20px rgba(0,0,0,0.3);transform:translateY(-2px)}
+.graph-card-header{padding:12px 16px;border-bottom:1px solid #21262d;display:flex;align-items:center;gap:8px}
+.graph-card-header .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.graph-card-header .dot.blue{background:#58a6ff}
+.graph-card-header .dot.green{background:#3fb950}
+.graph-card-header .dot.yellow{background:#d29922}
+.graph-card-header .dot.purple{background:#8b5cf6}
+.graph-card-header span{font-size:13px;font-weight:500;color:#c9d1d9}
+.graph-card-body{padding:12px;text-align:center;background:#0d1117;min-height:120px;display:flex;align-items:center;justify-content:center}
+.graph-card-body img{max-width:100%;height:auto;border-radius:4px;display:block}
+.graph-card-body .no-data{color:#484f58;font-style:italic;font-size:13px}
+
+/* ── Buttons ── */
+.btn-grid{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:20px 0}
+.btn{background:#238636;color:white;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-size:13px;font-weight:500;transition:all .2s}
+.btn:hover{background:#2ea043;transform:translateY(-1px);box-shadow:0 2px 8px rgba(35,134,54,0.3)}
+.btn-run-all{background:linear-gradient(135deg,#1f6feb,#388bfd)}
+.btn-run-all:hover{background:linear-gradient(135deg,#388bfd,#58a6ff);box-shadow:0 2px 8px rgba(31,111,235,0.3)}
+.btn-admin{background:#f85149}
+.btn-admin:hover{background:#da3633;box-shadow:0 2px 8px rgba(248,81,73,0.3)}
+.btn-soft-reset{background:#d29922}
+.btn-soft-reset:hover{background:#e3b341}
+.btn-stage6{background:linear-gradient(135deg,#8b5cf6,#7c3aed)}
+.btn-stage6:hover{background:linear-gradient(135deg,#7c3aed,#6d28d9);box-shadow:0 2px 8px rgba(139,92,246,0.3)}
+
+/* ── Output Log ── */
+.output-section{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:16px;margin-top:20px}
+.output-section h3{color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px}
+.output-section pre{color:#c9d1d9;font-family:'Cascadia Code',Consolas,monospace;font-size:12px;overflow-x:auto;white-space:pre-wrap;max-height:300px;line-height:1.5}
+
+/* ── Admin Section ── */
+.admin-section{background:linear-gradient(135deg,#161b22,#1c2333);border:1px solid #f8514940;border-radius:10px;padding:20px;margin-top:20px;display:none;box-shadow:0 0 20px rgba(248,81,73,0.1)}
+.admin-section h3{color:#f85149;font-size:14px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid #21262d}
 .admin-section .warning{color:#d29922;font-size:12px;margin-bottom:15px}
 .admin-grid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:15px}
-.admin-grid input{flex:1;min-width:200px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:10px}
-.pipeline-status{background:#21262d;border-radius:4px;padding:10px;margin-bottom:10px;font-size:12px}
-.pipeline-status .running{color:#238636}.pipeline-status .idle{color:#8b949e}.pipeline-status .script{color:#58a6ff}</style>
+.admin-grid input{flex:1;min-width:200px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:10px;font-size:13px}
+.pipeline-status{background:#21262d;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px}
+.pipeline-status .running{color:#3fb950;font-weight:600}
+.pipeline-status .idle{color:#8b949e}
+.pipeline-status .script{color:#58a6ff}
+
+/* ── Divider ── */
+.divider{height:1px;background:linear-gradient(90deg,transparent,#30363d,transparent);margin:24px 0}
+</style>
 </head><body><div class="container">
-<header><h1>Manhole Cover Pipeline</h1><div class="header-actions">
-<a href="/grade" class="btn btn-grade" style="text-decoration:none;padding:5px 10px;font-size:12px">📝 Grade</a>
-<a href="/grade/team" class="btn btn-grade" style="text-decoration:none;padding:5px 10px;font-size:12px">📊 Team</a>
+
+<!-- Header -->
+<header><h1>🔵 Manhole Cover Pipeline</h1><div class="header-actions">
+<a href="/grade" class="nav-link">📝 Grade</a>
+<a href="/grade/team" class="nav-link">📊 Team</a>
 <button class="admin-toggle-btn" onclick="toggleAdminPanel()">⚙️ Admin</button>
-<form action="/logout" method="get" style="display:inline"><button class="auth-btn">Logout</button></form></div></header>
+<form action="/logout" method="get" style="display:inline"><button class="auth-btn">Logout</button></form>
+</div></header>
 
-<div class="toolbar"><button class="toolbar-btn active" onclick="showGraph('sentiment')">Sentiment</button>
-<button class="toolbar-btn" onclick="showGraph('images')">Images</button>
-<button class="toolbar-btn" onclick="showGraph('cross')">Cross Analysis</button>
-<button class="toolbar-btn" onclick="showGraph('confusion')">Confusion Matrix</button></div>
-
-<div class="graph-panel active" id="panel-sentiment"><h3>Sentiment Analysis</h3><div class="graph-container" id="graphs-sentiment"><div class="no-data">Run pipeline to generate graphs</div></div></div>
-<div class="graph-panel" id="panel-images"><h3>Image Analysis</h3><div class="graph-container" id="graphs-images"><div class="no-data">Run pipeline to generate graphs</div></div></div>
-<div class="graph-panel" id="panel-cross"><h3>Cross Analysis</h3><div class="graph-container" id="graphs-cross"><div class="no-data">Run pipeline to generate graphs</div></div></div>
-<div class="graph-panel" id="panel-confusion"><h3>Confusion Matrix — Human vs AI</h3><div class="graph-container" id="graphs-confusion"><div class="no-data">Run Stage 6 to generate confusion matrix</div></div></div>
-
-<div class="status-grid">
+<!-- Status Strip -->
+<div class="status-strip">
 <div class="status-card" id="status-scrape"><h3>Scrape Data</h3><div class="count">0</div></div>
 <div class="status-card" id="status-sentiment"><h3>Sentiment</h3><div class="count">0</div></div>
 <div class="status-card" id="status-images"><h3>Images</h3><div class="count">0</div></div>
 <div class="status-card" id="status-cross"><h3>Cross Analysis</h3><div class="count">0</div></div>
-<div class="status-card" id="status-confusion"><h3>Confusion Matrix</h3><div class="count">—</div></div></div>
+<div class="status-card" id="status-confusion"><h3>Confusion</h3><div class="count">—</div></div>
+</div>
 
-<div class="btn-grid"><button class="btn btn-run-all" onclick="runAll()">Run Full Pipeline</button>
+<!-- Filter Bar -->
+<div class="filter-bar">
+<span class="label">Filter</span>
+<button class="filter-btn active" onclick="filterSection('all',this)">📊 All</button>
+<button class="filter-btn" onclick="filterSection('sentiment',this)">💬 Sentiment</button>
+<button class="filter-btn" onclick="filterSection('images',this)">🖼️ Images</button>
+<button class="filter-btn" onclick="filterSection('cross',this)">🔀 Cross Analysis</button>
+<button class="filter-btn" onclick="filterSection('confusion',this)">🎯 Confusion Matrix</button>
+</div>
+
+<!-- Sentiment Section -->
+<div class="dashboard-section" data-section="sentiment">
+<div class="section-header">
+<div class="section-icon sentiment">💬</div>
+<div><div class="section-title">Sentiment Analysis</div><div class="section-subtitle">5 graphs from Stage 2</div></div>
+</div>
+<div class="graph-grid">
+<div class="graph-card"><div class="graph-card-header"><span class="dot blue"></span><span>Weighted Sentiment by Country</span></div><div class="graph-card-body" id="g-sentiment-0"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot blue"></span><span>Sentiment Composition</span></div><div class="graph-card-body" id="g-sentiment-1"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot blue"></span><span>Text Volume by Country</span></div><div class="graph-card-body" id="g-sentiment-2"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot blue"></span><span>Keyword Heatmap</span></div><div class="graph-card-body" id="g-sentiment-3"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot blue"></span><span>Confidence Distribution</span></div><div class="graph-card-body" id="g-sentiment-4"><div class="no-data">Run pipeline to generate</div></div></div>
+</div></div>
+
+<!-- Images Section -->
+<div class="dashboard-section" data-section="images">
+<div class="section-header">
+<div class="section-icon images">🖼️</div>
+<div><div class="section-title">Image Analysis</div><div class="section-subtitle">4 graphs from Stage 3</div></div>
+</div>
+<div class="graph-grid">
+<div class="graph-card"><div class="graph-card-header"><span class="dot green"></span><span>Image Volume by Country</span></div><div class="graph-card-body" id="g-images-0"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot green"></span><span>Country Image Distribution</span></div><div class="graph-card-body" id="g-images-1"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot green"></span><span>Source Distribution</span></div><div class="graph-card-body" id="g-images-2"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot green"></span><span>Resolution Distribution</span></div><div class="graph-card-body" id="g-images-3"><div class="no-data">Run pipeline to generate</div></div></div>
+</div></div>
+
+<!-- Cross Analysis Section -->
+<div class="dashboard-section" data-section="cross">
+<div class="section-header">
+<div class="section-icon cross">🔀</div>
+<div><div class="section-title">Cross Analysis</div><div class="section-subtitle">6 graphs from Stage 4</div></div>
+</div>
+<div class="graph-grid">
+<div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Text vs Image by Country</span></div><div class="graph-card-body" id="g-cross-0"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Sentiment vs Image Volume</span></div><div class="graph-card-body" id="g-cross-1"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Combined Country Summary</span></div><div class="graph-card-body" id="g-cross-2"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Balance Ratio Chart</span></div><div class="graph-card-body" id="g-cross-3"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Coverage Summary</span></div><div class="graph-card-body" id="g-cross-4"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Sentiment Heatmap</span></div><div class="graph-card-body" id="g-cross-5"><div class="no-data">Run pipeline to generate</div></div></div>
+</div></div>
+
+<!-- Confusion Matrix Section -->
+<div class="dashboard-section" data-section="confusion">
+<div class="section-header">
+<div class="section-icon confusion">🎯</div>
+<div><div class="section-title">Confusion Matrix — Human vs AI</div><div class="section-subtitle">Human-AI sentiment validation from Stage 6</div></div>
+</div>
+<div class="graph-grid">
+<div class="graph-card" style="grid-column:1/-1"><div class="graph-card-header"><span class="dot purple"></span><span>Confusion Matrix & Metrics</span></div><div class="graph-card-body" id="g-confusion-0"><div class="no-data">Run Stage 6 to generate confusion matrix</div></div></div>
+</div></div>
+
+<div class="divider"></div>
+
+<!-- Pipeline Controls -->
+<div class="btn-grid"><button class="btn btn-run-all" onclick="runAll()">▶ Run Full Pipeline</button>
 <button class="btn" onclick="runStage('01_scrape_data.py')">Scrape</button>
 <button class="btn" onclick="runStage('03_sentiment_analysis.py')">Sentiment</button>
 <button class="btn" onclick="runStage('04_image_processing.py')">Images</button>
 <button class="btn" onclick="runStage('05_cross_analysis.py')">Cross Analysis</button>
-<button class="btn" onclick="runStage('06_confusion_matrix.py')" style="background:#8b5cf6">Stage 6: Confusion Matrix</button></div>
+<button class="btn btn-stage6" onclick="runStage('06_confusion_matrix.py')">Stage 6: Confusion Matrix</button></div>
 
+<!-- Admin Section -->
 <div class="admin-section"><h3>⚙️ Admin Controls</h3>
 <div class="warning">⚠️ Requires ADMIN_RESET_PASSWORD. Use with caution.</div>
 <div class="pipeline-status" id="pipeline-status">Pipeline Status: <span class="idle">Checking...</span></div>
@@ -259,20 +381,60 @@ header h1{color:#58a6ff;margin:0;font-size:20px}.header-actions{display:flex;gap
 <div class="output-section"><h3>Output Log</h3><pre id="output-log">Ready. Run a pipeline stage to see output.</pre></div></div>
 
 <script>
-function showGraph(t){document.querySelectorAll('.graph-panel').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.toolbar-btn').forEach(b=>b.classList.remove('active'));document.getElementById('panel-'+t).classList.add('active');event.target.classList.add('active');loadGraphs(t);}
-function loadGraphs(t){var P={sentiment:['sentiment_by_country.png','sentiment_composition.png','text_volume_by_country.png','keyword_heatmap.png','confidence_distribution.png'],images:['image_volume_by_country.png','country_image_distribution.png','source_distribution.png','image_resolution_distribution.png'],cross:['cross_analysis_visualizations/text_vs_image_by_country.png','cross_analysis_visualizations/sentiment_vs_image_volume.png','cross_analysis_visualizations/combined_country_summary.png','cross_analysis_visualizations/balance_ratio_chart.png','cross_analysis_visualizations/coverage_summary.png','cross_analysis_visualizations/sentiment_heatmap.png'],confusion:['confusion_matrix.png']};var c=document.getElementById('graphs-'+t);c.innerHTML='';(P[t]||[]).forEach(function(f){var img=document.createElement('img');img.src='/output/'+f;img.style.maxWidth='100%';img.style.margin='10px';img.onerror=function(){img.style.display='none'};c.appendChild(img)});}
+/* ── Graph Definitions ── */
+var GRAPH_MAP={
+sentiment:['sentiment_by_country.png','sentiment_composition.png','text_volume_by_country.png','keyword_heatmap.png','confidence_distribution.png'],
+images:['image_volume_by_country.png','country_image_distribution.png','source_distribution.png','image_resolution_distribution.png'],
+cross:['cross_analysis_visualizations/text_vs_image_by_country.png','cross_analysis_visualizations/sentiment_vs_image_volume.png','cross_analysis_visualizations/combined_country_summary.png','cross_analysis_visualizations/balance_ratio_chart.png','cross_analysis_visualizations/coverage_summary.png','cross_analysis_visualizations/sentiment_heatmap.png'],
+confusion:['confusion_matrix.png']
+};
+
+/* ── Load all graphs on page load ── */
+function loadAllGraphs(){
+Object.keys(GRAPH_MAP).forEach(function(section){
+GRAPH_MAP[section].forEach(function(file,idx){
+var el=document.getElementById('g-'+section+'-'+idx);
+if(!el)return;
+el.innerHTML='';
+var img=document.createElement('img');
+img.src='/output/'+file;
+img.alt=file.replace(/_/g,' ').replace('.png','');
+img.onerror=function(){el.innerHTML='<div class="no-data">Not yet generated</div>';};
+el.appendChild(img);
+});
+});
+}
+
+/* ── Filter sections ── */
+function filterSection(section,btn){
+document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active');});
+btn.classList.add('active');
+document.querySelectorAll('.dashboard-section').forEach(function(s){
+if(section==='all'){s.style.display='';}
+else{s.style.display=s.getAttribute('data-section')===section?'':'none';}
+});
+}
+
+/* ── Status updates ── */
 function updateStatus(s,st,c){var card=document.getElementById('status-'+s);if(card){card.querySelector('.count').textContent=c;card.className='status-card '+st;}}
 function updatePipelineStatus(){fetch('/admin/status').then(r=>r.json()).then(d=>{var el=document.getElementById('pipeline-status');if(d.running)el.innerHTML='Pipeline: <span class="running">RUNNING</span> — <span class="script">'+d.script+'</span> ('+d.started_ago+'s)';else el.innerHTML='Pipeline: <span class="idle">IDLE</span>';}).catch(()=>{});}
-function runAll(){var stages=['01_scrape_data.py','03_sentiment_analysis.py','04_image_processing.py','05_cross_analysis.py'];var i=0;var out=document.getElementById('output-log');function next(){if(i>=stages.length){out.textContent+='\\n✓ Full pipeline complete!\\n';return;}var s=stages[i];out.textContent+='['+(i+1)+'/'+stages.length+'] Starting '+s+'...\\n';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:s})}).then(r=>r.json()).then(d=>{out.textContent+=d.message+'\\n';if(d.status==='error'){out.textContent+='Aborting pipeline.\\n';return;}i++;pollThenNext();}).catch(e=>{out.textContent+='Error: '+e+'\\n';});}function pollThenNext(){out.textContent+='Waiting for '+stages[i-1]+' to finish...\\n';var tries=0;function p(){tries++;fetch('/admin/status').then(r=>r.json()).then(d=>{if(!d.running){out.textContent+='✓ '+stages[i-1]+' done.\\n';setTimeout(next,1000);}else if(tries>120){out.textContent+='Timeout waiting for '+stages[i-1]+'\\n';}else{setTimeout(p,5000);}}).catch(()=>setTimeout(p,5000));}p();}next();}
+
+/* ── Pipeline runners ── */
+function runAll(){var stages=['01_scrape_data.py','03_sentiment_analysis.py','04_image_processing.py','05_cross_analysis.py'];var i=0;var out=document.getElementById('output-log');function next(){if(i>=stages.length){out.textContent+='\\n✓ Full pipeline complete!\\n';loadAllGraphs();return;}var s=stages[i];out.textContent+='['+(i+1)+'/'+stages.length+'] Starting '+s+'...\\n';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:s})}).then(r=>r.json()).then(d=>{out.textContent+=d.message+'\\n';if(d.status==='error'){out.textContent+='Aborting pipeline.\\n';return;}i++;pollThenNext();}).catch(e=>{out.textContent+='Error: '+e+'\\n';});}function pollThenNext(){out.textContent+='Waiting for '+stages[i-1]+' to finish...\\n';var tries=0;function p(){tries++;fetch('/admin/status').then(r=>r.json()).then(d=>{if(!d.running){out.textContent+='✓ '+stages[i-1]+' done.\\n';setTimeout(next,1000);}else if(tries>120){out.textContent+='Timeout waiting for '+stages[i-1]+'\\n';}else{setTimeout(p,5000);}}).catch(()=>setTimeout(p,5000));}p();}next();}
 function runStage(script){var out=document.getElementById('output-log');out.textContent+='Starting '+script+'...\\n';fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})}).then(r=>r.json()).then(d=>{out.textContent+=d.message+'\\n';}).catch(e=>{out.textContent+='Error: '+e+'\\n';});}
+
+/* ── Admin functions ── */
 function adminReset(type){var pw=document.getElementById('admin-password').value;if(!pw){document.getElementById('admin-message').innerHTML='<span style="color:#f85149">Enter admin password</span>';return;}
-var msg=document.getElementById('admin-message');msg.innerHTML='Processing...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,reset_type:type})}).then(r=>r.json()).then(d=>{msg.innerHTML=d.success?'<span style="color:#238636">✓ '+d.message+'</span>':'<span style="color:#f85149">✗ '+d.message+'</span>';document.getElementById('admin-password').value='';}).catch(e=>{msg.innerHTML='<span style="color:#f85149">Error</span>';});}
+var msg=document.getElementById('admin-message');msg.innerHTML='Processing...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,reset_type:type})}).then(r=>r.json()).then(d=>{msg.innerHTML=d.success?'<span style="color:#3fb950">✓ '+d.message+'</span>':'<span style="color:#f85149">✗ '+d.message+'</span>';document.getElementById('admin-password').value='';if(d.success)loadAllGraphs();}).catch(e=>{msg.innerHTML='<span style="color:#f85149">Error</span>';});}
 function adminResetAndRerun(){var pw=document.getElementById('admin-password').value;if(!pw){document.getElementById('admin-message').innerHTML='<span style="color:#f85149">Enter admin password</span>';return;}
-var msg=document.getElementById('admin-message');msg.innerHTML='Resetting...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,reset_type:'full'})}).then(r=>r.json()).then(d=>{if(d.success){msg.innerHTML='<span style="color:#238636">✓ '+d.message+' Starting pipeline sequentially...</span>';document.getElementById('admin-password').value='';setTimeout(runAll,1500);}else msg.innerHTML='<span style="color:#f85149">✗ '+d.message+'</span>';}).catch(()=>{});}
+var msg=document.getElementById('admin-message');msg.innerHTML='Resetting...';fetch('/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw,reset_type:'full'})}).then(r=>r.json()).then(d=>{if(d.success){msg.innerHTML='<span style="color:#3fb950">✓ '+d.message+' Starting pipeline sequentially...</span>';document.getElementById('admin-password').value='';loadAllGraphs();setTimeout(runAll,1500);}else msg.innerHTML='<span style="color:#f85149">✗ '+d.message+'</span>';}).catch(()=>{});}
 function showLogs(){var out=document.getElementById('output-log');out.textContent='Fetching logs...\\n';fetch('/admin/logs').then(r=>r.json()).then(d=>{out.textContent='=== Pipeline Logs ===\\n';if(d.logs.length===0)out.textContent+='(no logs yet)\\n';else d.logs.forEach(function(l){out.textContent+=l+'\\n';});out.textContent+='\\nStatus: '+(d.running?'RUNNING ('+d.script+')':'IDLE')+'\\n';}).catch(e=>{out.textContent+='Error fetching logs: '+e+'\\n';});}
+function toggleAdminPanel(){var s=document.querySelector('.admin-section');s.style.display=s.style.display==='none'?'block':'none';}
+
+/* ── Auto-refresh ── */
 setInterval(()=>{fetch('/counts').then(r=>r.json()).then(d=>{if(d.scrape)updateStatus('scrape','completed',d.scrape);if(d.sentiment)updateStatus('sentiment','completed',d.sentiment);if(d.images)updateStatus('images','completed',d.images);if(d.cross)updateStatus('cross','completed',d.cross);if(d.confusion)updateStatus('confusion','completed','✓');});updatePipelineStatus();},3000);
 setTimeout(updatePipelineStatus,100);
-function toggleAdminPanel(){var s=document.querySelector('.admin-section');s.style.display=s.style.display==='none'?'block':'none';}
+loadAllGraphs();
 </script></body></html>"""
 
 GRADE_HTML = """<!DOCTYPE html><html><head><title>Grade Snippets</title>
