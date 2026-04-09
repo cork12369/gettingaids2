@@ -335,7 +335,7 @@ header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
 <div class="dashboard-section" data-section="cross">
 <div class="section-header">
 <div class="section-icon cross">🔀</div>
-<div><div class="section-title">Cross Analysis</div><div class="section-subtitle">6 graphs from Stage 4</div></div>
+<div><div class="section-title">Cross Analysis</div><div class="section-subtitle">7 graphs from Stage 4</div></div>
 </div>
 <div class="graph-grid">
 <div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Text vs Image by Country</span></div><div class="graph-card-body" id="g-cross-0"><div class="no-data">Run pipeline to generate</div></div></div>
@@ -344,6 +344,7 @@ header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
 <div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Balance Ratio Chart</span></div><div class="graph-card-body" id="g-cross-3"><div class="no-data">Run pipeline to generate</div></div></div>
 <div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Coverage Summary</span></div><div class="graph-card-body" id="g-cross-4"><div class="no-data">Run pipeline to generate</div></div></div>
 <div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Sentiment Heatmap</span></div><div class="graph-card-body" id="g-cross-5"><div class="no-data">Run pipeline to generate</div></div></div>
+<div class="graph-card"><div class="graph-card-header"><span class="dot yellow"></span><span>Human vs AI Agreement</span></div><div class="graph-card-body" id="g-cross-6"><div class="no-data">Grade snippets to generate</div></div></div>
 </div></div>
 
 <!-- Confusion Matrix Section -->
@@ -385,7 +386,7 @@ header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
 var GRAPH_MAP={
 sentiment:['sentiment_by_country.png','sentiment_composition.png','text_volume_by_country.png','keyword_heatmap.png','confidence_distribution.png'],
 images:['image_volume_by_country.png','country_image_distribution.png','source_distribution.png','image_resolution_distribution.png'],
-cross:['cross_analysis_visualizations/text_vs_image_by_country.png','cross_analysis_visualizations/sentiment_vs_image_volume.png','cross_analysis_visualizations/combined_country_summary.png','cross_analysis_visualizations/balance_ratio_chart.png','cross_analysis_visualizations/coverage_summary.png','cross_analysis_visualizations/sentiment_heatmap.png'],
+cross:['cross_analysis_visualizations/text_vs_image_by_country.png','cross_analysis_visualizations/sentiment_vs_image_volume.png','cross_analysis_visualizations/combined_country_summary.png','cross_analysis_visualizations/balance_ratio_chart.png','cross_analysis_visualizations/coverage_summary.png','cross_analysis_visualizations/sentiment_heatmap.png','cross_analysis_visualizations/human_ai_agreement.png'],
 confusion:['confusion_matrix.png']
 };
 
@@ -498,7 +499,8 @@ function grade(s){if(idx>=snippets.length)return;var sid=snippets[idx].snippet_i
 fetch('/grade/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snippet_id:sid,score:s})}).then(r=>r.json()).then(d=>{if(d.success){
 var colors=['rgba(231,76,60,0.3)','rgba(243,156,18,0.3)','rgba(46,204,113,0.3)'];
 var fl=document.getElementById('flash');fl.style.background=colors[s];fl.style.opacity='1';
-setTimeout(()=>{fl.style.opacity='0';},200);idx++;show();}});}
+setTimeout(()=>{fl.style.opacity='0';},200);idx++;show();
+if(d.chunk_complete){fetch('/refresh-cross-analysis').catch(()=>{});}});}
 load();
 </script></body></html>"""
 
@@ -596,7 +598,27 @@ def grade_submit():
         return jsonify({"success": False, "error": "Missing data"}), 400
     gid = _get_or_create_grader_id()
     _append_grade(sid, gid, int(score))
-    return jsonify({"success": True})
+
+    # Detect chunk completion
+    chunk_complete = False
+    try:
+        assignments = _read_assignments()
+        for a in assignments:
+            if a["grader_id"] == gid:
+                ci = int(a["chunk_index"])
+                start = ci * CHUNK_SIZE
+                end = min(start + CHUNK_SIZE, SAMPLE_TARGET)
+                chunk_snippet_ids = set(str(i) for i in range(start, end))
+                grades = _read_grades()
+                graded_in_chunk = {g["snippet_id"] for g in grades
+                                   if g["grader_id"] == gid and g["snippet_id"] in chunk_snippet_ids}
+                if len(graded_in_chunk) >= (end - start):
+                    chunk_complete = True
+                break
+    except Exception:
+        pass
+
+    return jsonify({"success": True, "chunk_complete": chunk_complete})
 
 @app.route("/grade/api/progress")
 @require_auth
@@ -648,6 +670,37 @@ def get_counts():
         if (OUTPUT_DIR/"classification_report.csv").exists(): counts["confusion"] = 1
     except: pass
     return jsonify(counts)
+
+@app.route("/refresh-cross-analysis")
+@require_auth
+def refresh_cross_analysis():
+    """Trigger cross-analysis refresh (used after chunk completion)."""
+    with _job_lock:
+        if job_state["running"]:
+            return jsonify({"started": False, "reason": "Pipeline busy"})
+        job_state["running"] = True
+        job_state["script"] = "05_cross_analysis.py (auto-refresh)"
+        job_state["started_at"] = time.time()
+
+    def go():
+        try:
+            r = subprocess.run(["python", "05_cross_analysis.py"],
+                               capture_output=True, text=True, timeout=300)
+            log_entry = f"Auto cross-analysis refresh: exit {r.returncode}"
+        except Exception as e:
+            log_entry = f"Auto cross-analysis error: {e}"
+        finally:
+            with _job_lock:
+                job_state["running"] = False
+                job_state["script"] = None
+                job_state["started_at"] = None
+                if len(job_state["log"]) >= MAX_LOG_ENTRIES:
+                    job_state["log"] = job_state["log"][-MAX_LOG_ENTRIES:]
+                job_state["log"].append(log_entry)
+
+    t = threading.Thread(target=go)
+    t.start()
+    return jsonify({"started": True})
 
 @app.route("/admin/status")
 @require_auth

@@ -248,6 +248,63 @@ def plot_coverage_summary(text_df, img_df, output_dir):
     print(f"  ✓ Saved: coverage_summary.png")
 
 
+def plot_human_ai_agreement(text_df, output_dir):
+    """Figure 7: Human vs AI Sentiment Agreement by Country."""
+    human_grades_path = Path("/data/human_grades.csv")
+    grade_sample_path = Path("/data/grade_sample.csv")
+    if not human_grades_path.exists() or not grade_sample_path.exists():
+        print("  ⚠ No human grades yet — skipping Human vs AI agreement chart")
+        return
+
+    import pandas as pd
+    grades = pd.read_csv(human_grades_path)
+    sample = pd.read_csv(grade_sample_path)
+
+    # Merge grades with sample to get country and AI label
+    sample["snippet_id"] = sample["snippet_id"].astype(str)
+    grades["snippet_id"] = grades["snippet_id"].astype(str)
+    merged = grades.merge(sample[["snippet_id", "country", "label"]], on="snippet_id", how="left")
+
+    # Map scores to labels: human_score 0→NEG, 1→NEU, 2→POS
+    def _human_label(s):
+        s = int(s)
+        return {-1: "NEG", 0: "NEU", 1: "POS"}.get(s, "NEU")
+    # Scores are 0=neg, 1=neu, 2=pos in the grading UI
+    merged["human_label"] = merged["human_score"].map({0: "NEG", 1: "NEU", 2: "POS"})
+    merged["ai_short"] = merged["label"].str.upper().str.replace("ITIVE", "").str.replace("GATIVE", "").str.strip()
+    merged["ai_short"] = merged["label"].apply(
+        lambda x: "POS" if "POS" in str(x).upper() else ("NEG" if "NEG" in str(x).upper() else "NEU"))
+    merged["agree"] = merged["human_label"] == merged["ai_short"]
+
+    if "country" not in merged.columns or merged["country"].dropna().empty:
+        print("  ⚠ No country data in human grades — skipping agreement chart")
+        return
+
+    agreement = merged.groupby("country")["agree"].mean().sort_values(ascending=False)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    colors = ["#2ecc71" if v >= 0.7 else "#f39c12" if v >= 0.5 else "#e74c3c" for v in agreement.values]
+    bars = ax.bar(agreement.index, agreement.values, color=colors, edgecolor="black", linewidth=0.5)
+
+    for bar, val in zip(bars, agreement.values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
+                f"{val:.0%}", ha="center", va="bottom", fontsize=9, fontweight="bold")
+
+    ax.set_ylim(0, 1.1)
+    ax.axhline(0.7, color="#2ecc71", linewidth=1, linestyle="--", alpha=0.5, label="Good (70%)")
+    ax.axhline(0.5, color="#f39c12", linewidth=1, linestyle="--", alpha=0.5, label="Fair (50%)")
+    ax.set_xlabel("Country", fontsize=11)
+    ax.set_ylabel("Agreement Rate", fontsize=11)
+    ax.set_title(f"Figure 7: Human vs AI Sentiment Agreement by Country\n"
+                 f"(Based on {len(merged)} human-graded snippets)", fontsize=13, fontweight="bold")
+    ax.legend(fontsize=9)
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.savefig(output_dir / "human_ai_agreement.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: human_ai_agreement.png")
+
+
 def plot_sentiment_heatmap(text_df, output_dir):
     """Figure 6: Sentiment Distribution Heatmap"""
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -325,6 +382,30 @@ def cross_analyze():
         
         if 'country' in img_df.columns:
             summary["countries_with_images"] = img_df['country'].nunique()
+
+    # ── Human grading metrics (optional) ────────────────────────────────────
+    human_grades_path = Path("/data/human_grades.csv")
+    if human_grades_path.exists():
+        import pandas as pd
+        hgrades = pd.read_csv(human_grades_path)
+        summary["human_grades_total"] = len(hgrades)
+        if len(hgrades) > 0:
+            grade_sample_path = Path("/data/grade_sample.csv")
+            if grade_sample_path.exists():
+                gsample = pd.read_csv(grade_sample_path)
+                gsample["snippet_id"] = gsample["snippet_id"].astype(str)
+                hgrades["snippet_id"] = hgrades["snippet_id"].astype(str)
+                hmerged = hgrades.merge(gsample[["snippet_id", "country", "label"]], on="snippet_id", how="left")
+                hmerged["human_label"] = hmerged["human_score"].map({0: "NEG", 1: "NEU", 2: "POS"})
+                hmerged["ai_short"] = hmerged["label"].apply(
+                    lambda x: "POS" if "POS" in str(x).upper() else ("NEG" if "NEG" in str(x).upper() else "NEU"))
+                hmerged["agree"] = hmerged["human_label"] == hmerged["ai_short"]
+                summary["human_ai_agreement_rate"] = round(hmerged["agree"].mean() * 100, 1)
+                if "country" in hmerged.columns:
+                    for c in hmerged["country"].dropna().unique():
+                        sub = hmerged[hmerged["country"] == c]
+                        if len(sub) > 0:
+                            summary[f"human_ai_agreement_{c}"] = round(sub["agree"].mean() * 100, 1)
     
     if 'text' in dfs and 'image' in dfs:
         text_countries = set(dfs['text'].get('country', pd.Series()).dropna().unique())
@@ -378,19 +459,21 @@ def cross_analyze():
         plot_balance_ratio_chart(text_df, img_df, CROSS_DIR)
         plot_coverage_summary(text_df, img_df, CROSS_DIR)
         plot_sentiment_heatmap(text_df, CROSS_DIR)
+        plot_human_ai_agreement(text_df, CROSS_DIR)
     else:
         print("  ⚠ Insufficient data for visualizations")
     
     print("\n" + "=" * 50)
     print("✓ Cross Analysis Complete")
     print("=" * 50)
-    print(f"\nGenerated 6 visualization figures in: {CROSS_DIR}")
+    print(f"\nGenerated up to 7 visualization figures in: {CROSS_DIR}")
     print("  • Figure 1: text_vs_image_by_country.png")
     print("  • Figure 2: sentiment_vs_image_volume.png")
     print("  • Figure 3: combined_country_summary.png")
     print("  • Figure 4: balance_ratio_chart.png")
     print("  • Figure 5: coverage_summary.png")
     print("  • Figure 6: sentiment_heatmap.png")
+    print("  • Figure 7: human_ai_agreement.png (when human grades exist)")
     print(f"\nAll outputs saved to: {OUTPUT_DIR}")
 
 
