@@ -54,7 +54,7 @@ OUTPUT_CSV     = OUTPUT_DIR / "image_analysis.csv"
 CACHE_FILE     = OUTPUT_DIR / "image_analysis_cache.json"
 
 # Cache versioning — bump if prompts or schema change to invalidate stale entries
-CACHE_VERSION  = "v2"
+CACHE_VERSION  = "v3"
 
 # OpenRouter
 OPENROUTER_KEY  = os.getenv("OPENROUTER_API_KEY", "")
@@ -71,73 +71,172 @@ log = logging.getLogger("image_analysis")
 # ── VLM / LLM prompt templates ───────────────────────────────────────────────
 
 VLM_SYSTEM_PROMPT = """\
-You are an expert visual analyst specialising in urban infrastructure photography.
-Your task is to analyse images of manhole covers and drainage grates from around the world
-and produce structured visual assessments.
+You are an expert design critic specialising in urban infrastructure and street-level 
+visual culture worldwide. You have deep knowledge of:
 
-Always respond with ONLY valid JSON — no markdown fences, no extra commentary.
+- Japanese manhole cover art (蓋アート / manhoru-ga), known for colourful, region-specific 
+  mascot, landmark, and floral designs that turn utility covers into public art.
+- European utility covers, which range from plain industrial plates (UK, Germany) to 
+  ornate historical cast-iron patterns (France, Netherlands).
+- Covers from the Americas, Southeast Asia, South Korea, and Oceania with varying 
+  traditions of functional vs. decorative design.
+
+Your task is to analyse images of manhole covers and drainage grates and produce 
+a structured visual assessment as JSON.
+
+RULES:
+1. Output ONLY a single JSON object — no markdown fences, no commentary before or after.
+2. If the image is clearly NOT a manhole cover or drain grate (e.g., random object, 
+   landscape, person), set is_manhole_cover=false and fill fields with null/empty values.
+3. For collages or photos containing multiple covers, describe the DOMINANT/central cover.
+4. For diagrams or technical drawings, classify view_type as "diagram".
+5. Be specific and honest — if a cover is plain, say so; do not inflate scores.
 """
 
 VLM_USER_PROMPT = """\
-Analyse this image and return a JSON object with EXACTLY these fields:
+Examine this image carefully and return a single JSON object with EXACTLY these fields.
+Follow the calibration guidelines below each field.
 
 {
-  "is_manhole_cover": true/false,
-  "relevance_confidence": 0.0-1.0,
-  "image_quality": "low" | "medium" | "high",
-  "view_type": "close-up" | "medium" | "street_scene" | "collage" | "diagram" | "other",
-  "motifs": ["list of: floral, geometric, animal, mascot, landmark, text, emblem, wave, nature, abstract, none"],
-  "ornamentation_level": "plain" | "minimal" | "moderate" | "ornate" | "highly_ornate",
-  "symmetry": "none" | "low" | "medium" | "high",
-  "visual_complexity": "low" | "medium" | "high",
-  "text_present": true/false,
-  "text_content": "visible text or empty string",
-  "cultural_elements": true/false,
-  "cultural_elements_detail": "description or empty string",
-  "dominant_style": "traditional" | "modern" | "minimalist" | "artistic" | "industrial" | "other",
-  "colour_palette": ["list of dominant colours"],
-  "aesthetic_appeal": "low" | "medium" | "high",
-  "caption": "one concise descriptive sentence",
-  "confidence": 0.0-1.0
+  "is_manhole_cover": <boolean>,
+  "relevance_confidence": <float 0.0-1.0, how certain you are this is/is not a manhole cover>,
+  "image_quality": <"low" | "medium" | "high">,
+  "view_type": <"close-up" | "medium" | "street_scene" | "collage" | "diagram" | "other">,
+  "motifs": <array of strings from the taxonomy below>,
+  "ornamentation_level": <"plain" | "minimal" | "moderate" | "ornate" | "highly_ornate">,
+  "symmetry": <"none" | "low" | "medium" | "high">,
+  "visual_complexity": <"low" | "medium" | "high">,
+  "text_present": <boolean>,
+  "text_content": <string: transcribe visible text, or "">,
+  "cultural_elements": <boolean>,
+  "cultural_elements_detail": <string: describe region-specific or culturally unique features, or "">,
+  "dominant_style": <"traditional" | "modern" | "minimalist" | "artistic" | "industrial" | "other">,
+  "colour_palette": <array of colour strings, e.g. ["grey","blue","green"]>,
+  "aesthetic_appeal": <"low" | "medium" | "high">,
+  "caption": <string: one descriptive sentence of 10-25 words>,
+  "confidence": <float 0.0-1.0, your overall confidence in this entire assessment>
 }
 
-If the image is NOT a manhole cover, set is_manhole_cover=false and fill what you can.
+── CALIBRATION GUIDE ──────────────────────────────────────
+
+image_quality:
+  "low"    = blurry, pixelated, poor lighting, details hard to discern
+  "medium" = acceptable clarity, most features visible but some noise/blur
+  "high"   = sharp, well-lit, all design details clearly visible
+
+view_type:
+  "close-up"     = cover fills most of the frame, fine details visible
+  "medium"       = cover visible with some surrounding context (street, pavement)
+  "street_scene" = wide shot where cover is a small part of the scene
+  "collage"      = multiple covers shown together in a grid/arrangement
+  "diagram"      = technical drawing, blueprint, or schematic
+  "other"        = anything that doesn't fit above
+
+motif taxonomy (select ALL that apply from this list):
+  "floral"     = flowers, leaves, vines, botanical patterns
+  "geometric"  = repeating shapes, grids, concentric circles, abstract geometry
+  "animal"     = any animal or creature representation
+  "mascot"     = cartoon character, local mascot, or personified figure
+  "landmark"   = building, monument, bridge, or recognizable structure
+  "text"       = city names, utility labels, brand names, kanji, logos
+  "emblem"     = coats of arms, civic crests, corporate logos, official seals
+  "wave"       = water patterns, ocean motifs, flowing lines
+  "nature"     = landscapes, mountains, rivers, trees, clouds, weather
+  "abstract"   = non-representational patterns, color fields, artistic flourishes
+  Use ["none"] only if the cover is completely unadorned.
+
+ornamentation_level:
+  "plain"         = flat disk or grid, zero intentional decoration
+  "minimal"       = one or two simple features (e.g., a single ring, utility text)
+  "moderate"      = noticeable pattern or 2-3 decorative elements
+  "ornate"        = rich decoration with multiple integrated design elements
+  "highly_ornate" = elaborate multi-layer artwork (typical of Japanese manhoru-ga)
+
+symmetry:
+  "none"   = no discernible symmetry
+  "low"    = roughly balanced but not mirror-identical
+  "medium" = bilateral symmetry on at least one axis
+  "high"   = near-perfect radial or multi-axis symmetry
+
+visual_complexity (overall information density of the design):
+  "low"    = simple shape with minimal visual information
+  "medium" = moderate detail; a few distinct visual elements
+  "high"   = dense, intricate design with many interlocking elements
+
+dominant_style:
+  "traditional" = classic cast-iron patterns, historical motifs, heraldic elements
+  "modern"      = clean lines, sans-serif text, contemporary design language
+  "minimalist"  = stark simplicity, bare functional surface
+  "artistic"    = intentional aesthetic design — murals, illustrations, colour work
+  "industrial"  = purely functional — grid/grate pattern, no aesthetic intent
+  "other"       = does not fit any category above
+
+aesthetic_appeal (subjective visual attractiveness of the design, not the photo):
+  "low"    = unattractive or visually uninteresting design
+  "medium" = moderately appealing, some aesthetic merit
+  "high"   = visually striking, would draw positive attention from passers-by
+
+If the image is NOT a manhole cover, set is_manhole_cover=false, relevance_confidence 
+to your certainty, and set all other fields to null or empty values.
 Respond with ONLY the JSON object."""
 
 LLM_SYSTEM_PROMPT = """\
-You are a data-normalisation assistant. Your job is to take raw JSON from a
-vision-language model and return a clean, strictly-typed JSON row that matches
-the schema exactly. Fix typos, map synonyms to canonical values, and ensure
-all required fields are present and correctly typed."""
+You are a precise data-normalisation engine. You receive raw JSON from a vision-language 
+model that analyses manhole-cover images. Your job is to return a clean, strictly-typed 
+JSON object matching the canonical schema below.
+
+RULES:
+1. Output ONLY the JSON object — no markdown, no commentary.
+2. Every field from the schema MUST be present — never drop a field.
+3. Map any synonym or non-canonical value to the nearest allowed value.
+4. If a field is missing or null in the input, fill it with the default for that type:
+   booleans → false, strings → "", floats → 0.0, arrays → [].
+5. Strip any field that does NOT appear in the schema.
+6. Set normalization_confidence to how confident you are that the output is fully correct:
+   1.0 = all values mapped cleanly, 0.5 = some guesses, 0.0 = largely uncertain.
+
+SYNONYM MAPPING (non-exhaustive — apply the same logic to similar cases):
+  "very ornate" / "extremely ornate" / "elaborate"    → "highly_ornate"
+  "slightly ornate" / "lightly decorated"             → "minimal"
+  "decorated" / "medium ornate"                       → "moderate"
+  "highly complex" / "very complex"                   → "high"  (visual_complexity)
+  "not symmetric" / "asymmetric"                      → "none"  (symmetry)
+  "beautiful" / "gorgeous" / "very appealing"         → "high"  (aesthetic_appeal)
+  "ugly" / "unappealing"                              → "low"   (aesthetic_appeal)
+  "photo" / "photograph" / "snapshot"                 → "close-up" or "medium" (view_type)
+  "Japanese style" / "anime" / "colorful"             → "artistic" (dominant_style)
+  "Cast iron" / "cast-iron" / "iron"                  → "industrial" (dominant_style)
+  Boolean synonyms: "yes"/"true"/"1" → true, "no"/"false"/"0" → false
+"""
 
 LLM_USER_PROMPT = """\
-Here is raw JSON output from a vision model analysing a manhole-cover image:
+Here is raw JSON from the vision model:
 
----RAW_VLM_JSON---
+---RAW VLM OUTPUT---
 {raw_json}
----END_RAW_VLM_JSON---
+---END RAW VLM OUTPUT---
 
-Normalise it into EXACTLY this schema. Only output the JSON object, nothing else:
+Normalise it into EXACTLY this schema (output only the JSON):
 
 {{
-  "is_manhole_cover": bool,
-  "relevance_confidence": float 0.0-1.0,
+  "is_manhole_cover": <bool>,
+  "relevance_confidence": <float 0.0-1.0>,
   "image_quality": "low" | "medium" | "high",
   "view_type": "close-up" | "medium" | "street_scene" | "collage" | "diagram" | "other",
-  "motifs": [str],
+  "motifs": [<str from: floral, geometric, animal, mascot, landmark, text, emblem, wave, nature, abstract>],
   "ornamentation_level": "plain" | "minimal" | "moderate" | "ornate" | "highly_ornate",
   "symmetry": "none" | "low" | "medium" | "high",
   "visual_complexity": "low" | "medium" | "high",
-  "text_present": bool,
-  "text_content": str,
-  "cultural_elements": bool,
-  "cultural_elements_detail": str,
+  "text_present": <bool>,
+  "text_content": <str>,
+  "cultural_elements": <bool>,
+  "cultural_elements_detail": <str>,
   "dominant_style": "traditional" | "modern" | "minimalist" | "artistic" | "industrial" | "other",
-  "colour_palette": [str],
+  "colour_palette": [<str>],
   "aesthetic_appeal": "low" | "medium" | "high",
-  "caption": str,
-  "vlm_confidence": float 0.0-1.0,
-  "normalization_confidence": float 0.0-1.0
+  "caption": <str>,
+  "vlm_confidence": <float 0.0-1.0, copy from input "confidence" field>,
+  "normalization_confidence": <float 0.0-1.0, your confidence in this normalization>
 }}"""
 
 
