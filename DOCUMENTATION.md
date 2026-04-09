@@ -119,7 +119,7 @@ This project establishes a **data-driven link between aesthetic design choices a
 | `app.py` | Web dashboard, authentication, pipeline orchestration, human grading |
 | `01_scrape_data.py` | Web scraping (DuckDuckGo, Wikimedia) for text and images |
 | `03_sentiment_analysis.py` | NLP sentiment scoring using RoBERTa transformer model |
-| `04_image_processing.py` | Image metadata extraction and analysis |
+| `04_image_processing.py` | AI-powered image analysis (VLM + LLM via OpenRouter) |
 | `05_cross_analysis.py` | Cross-correlation of sentiment and image data |
 | `06_confusion_matrix.py` | Validation of AI sentiment against human grades |
 
@@ -202,22 +202,71 @@ TARGET_IMG_PER_COUNTRY = 50  # Ideal number of images per country
 
 ---
 
-### Stage 3: Image Processing (`04_image_processing.py`)
+### Stage 3: AI-Powered Image Analysis (`04_image_processing.py`)
 
-**Purpose:** Extract and catalog metadata from downloaded images.
+**Purpose:** Extract visual features from manhole-cover images using a two-model VLM + LLM pipeline via OpenRouter.
 
-**Features:**
-- Recursive scanning of `/data/images/` directory
-- Basic image metadata extraction (dimensions, format, aspect ratio)
-- File size tracking
-- Metadata enrichment from `image_metadata.csv`
+**Architecture:**
+```
+┌─────────────┐    ┌──────────────────┐    ┌────────────────────┐
+│  Image file  │───▶│  reka-edge (VLM) │───▶│ seed-1.6-flash(LLM)│
+└─────────────┘    │  visual analysis  │    │  schema normalizer  │
+                   └──────────────────┘    └────────────────────┘
+                            │                       │
+                   raw visual JSON          normalized row
+                            └───────┬───────────────┘
+                                    ▼
+                            image_analysis.csv
+```
 
-**Output File:**
+**Models Used:**
+| Role | Model | Purpose |
+|------|-------|---------|
+| VLM | `rekaai/reka-edge` | Visual perception — motif detection, style classification, captioning |
+| LLM | `bytedance-seed/seed-1.6-flash` | Schema normalisation — fix typos, canonicalise values, enforce types |
+
+**AI-Extracted Visual Attributes:**
+| Attribute | Values | Description |
+|-----------|--------|-------------|
+| `is_manhole_cover` | bool | Whether image actually shows a manhole cover |
+| `relevance_confidence` | 0.0–1.0 | Confidence in relevance classification |
+| `image_quality` | low / medium / high | Perceived image quality |
+| `view_type` | close-up / medium / street_scene / collage / diagram / other | Camera distance/type |
+| `motifs` | pipe-separated list | floral, geometric, animal, mascot, landmark, text, emblem, wave, nature, abstract |
+| `ornamentation_level` | plain / minimal / moderate / ornate / highly_ornate | Decorative complexity |
+| `symmetry` | none / low / medium / high | Symmetry of design |
+| `visual_complexity` | low / medium / high | Overall visual complexity |
+| `text_present` | bool | Visible text on cover |
+| `cultural_elements` | bool | Culturally specific design features |
+| `dominant_style` | traditional / modern / minimalist / artistic / industrial / other | Design style category |
+| `aesthetic_appeal` | low / medium / high | Estimated aesthetic quality |
+| `caption` | string | One-sentence visual description |
+
+**Key Features:**
+- Two-stage pipeline: VLM perception → LLM normalisation
+- Resumable processing via MD5-based cache (`image_analysis_cache.json`)
+- Automatic retry with exponential backoff (3 attempts per model)
+- Rate limiting between batches (configurable batch size)
+- Graceful fallback to metadata-only mode when `OPENROUTER_API_KEY` is not set
+- Images resized to 1024px max before upload to minimise token cost
+
+**Environment Variables:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENROUTER_API_KEY` | (none) | OpenRouter API key — enables AI mode when set |
+| `VLM_MODEL` | `rekaai/reka-edge` | Vision-language model ID on OpenRouter |
+| `LLM_MODEL` | `bytedance-seed/seed-1.6-flash` | Text LLM for normalisation |
+| `VLM_MAX_RETRIES` | `3` | Retry attempts per model call |
+| `VLM_BATCH_SIZE` | `5` | Images per batch (pause between batches) |
+| `VLM_USE_FALLBACK` | `false` | Force metadata-only mode if `"true"` |
+
+**Output Files:**
 | File | Description |
 |------|-------------|
-| `/data/output/image_analysis.csv` | Image metadata catalog |
+| `/data/output/image_analysis.csv` | Full image analysis with AI attributes + metadata |
+| `/data/output/image_analysis_cache.json` | Resumable VLM+LLM result cache |
 
-**Dependencies:** `Pillow`, `pandas`
+**Dependencies:** `Pillow`, `pandas`, `openai` (OpenRouter-compatible client)
 
 ---
 
@@ -390,18 +439,31 @@ python -c "import secrets; print(secrets.token_hex(32))"
 | Column | Type | Description |
 |--------|------|-------------|
 | filename | string | File name |
-| relative_path | string | Path relative to images dir |
 | country | string | Country extracted from path |
 | width | int | Image width |
 | height | int | Image height |
 | format | string | Image format (JPEG, PNG, etc.) |
 | mode | string | Color mode (RGB, etc.) |
 | aspect_ratio | float | Width/Height ratio |
-| file_size_bytes | int | File size in bytes |
 | file_size_kb | float | File size in KB |
-| title | string | From metadata |
-| source | string | Image source |
-| source_url | string | Original URL |
+| is_manhole_cover | bool | Whether image shows a manhole cover (AI) |
+| relevance_confidence | float | Relevance confidence 0–1 (AI) |
+| image_quality | string | low / medium / high (AI) |
+| view_type | string | close-up / medium / street_scene / etc. (AI) |
+| motifs | string | Pipe-separated motif list (AI) |
+| ornamentation_level | string | plain → highly_ornate (AI) |
+| symmetry | string | none / low / medium / high (AI) |
+| visual_complexity | string | low / medium / high (AI) |
+| text_present | bool | Visible text on cover (AI) |
+| text_content | string | Transcribed text, if any (AI) |
+| cultural_elements | bool | Culturally specific features (AI) |
+| cultural_elements_detail | string | Description of cultural elements (AI) |
+| dominant_style | string | traditional / modern / artistic / etc. (AI) |
+| colour_palette | string | Pipe-separated colour list (AI) |
+| aesthetic_appeal | string | low / medium / high (AI) |
+| caption | string | One-sentence visual description (AI) |
+| vlm_confidence | float | VLM confidence 0–1 (AI) |
+| normalization_confidence | float | LLM normalisation confidence 0–1 (AI) |
 
 ### Output Data Files
 
@@ -466,6 +528,12 @@ python -c "import secrets; print(secrets.token_hex(32))"
 | `SESSION_SECRET` | Yes | Flask session signing secret |
 | `ADMIN_RESET_PASSWORD` | No | Admin password for reset controls |
 | `PORT` | No | Server port (default: 8080) |
+| `OPENROUTER_API_KEY` | No | OpenRouter key — enables AI image analysis in Stage 3 |
+| `VLM_MODEL` | No | Vision model ID (default: `rekaai/reka-edge`) |
+| `LLM_MODEL` | No | Normalisation LLM ID (default: `bytedance-seed/seed-1.6-flash`) |
+| `VLM_MAX_RETRIES` | No | Retry attempts per model call (default: 3) |
+| `VLM_BATCH_SIZE` | No | Images per batch (default: 5) |
+| `VLM_USE_FALLBACK` | No | Set `"true"` to force metadata-only mode |
 
 ### Configuration Files
 
@@ -502,6 +570,9 @@ seaborn>=0.13.0
 
 # Metrics
 scikit-learn>=1.3.0
+
+# VLM / LLM via OpenRouter
+openai>=1.30.0
 ```
 
 #### `zbpack.json`
@@ -615,6 +686,7 @@ Zeabur dashboard → Service → Volumes tab:
 |----------|-------------|
 | `ACCESS_KEY` | Generated via `python -c "import base64, os; print(base64.b32encode(os.urandom(10)).decode())"` |
 | `SESSION_SECRET` | Generated via `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `OPENROUTER_API_KEY` | Your OpenRouter API key (optional — enables AI image analysis) |
 
 ### Step 5: Set Resources
 
@@ -767,5 +839,5 @@ All outputs are stored in `/data/output/`:
 
 ---
 
-*Documentation Version: 1.0*  
+*Documentation Version: 2.0*  
 *Last Updated: April 2026*
