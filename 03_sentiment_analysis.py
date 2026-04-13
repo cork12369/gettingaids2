@@ -20,9 +20,11 @@ from pathlib import Path
 # Alternative: "distilbert-base-uncased-finetuned-sst-2-english" (simpler, faster)
 SENTIMENT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 
-OUTPUT_DIR = Path("/data/output")
-TEXT_CSV = Path("/data/text_raw.csv")
-SENTIMENT_CSV = Path("/data/text_with_sentiment.csv")
+# Support both Zeabur (/data) and local development (./data)
+_data_root = Path("/data") if Path("/data").exists() else Path("./data")
+OUTPUT_DIR = _data_root / "output"
+TEXT_CSV = _data_root / "text_raw.csv"
+SENTIMENT_CSV = _data_root / "text_with_sentiment.csv"
 
 # Country/region keyword mapping for tagging text to a region
 # Applied to post title + text + subreddit
@@ -54,9 +56,17 @@ MIN_TEXT_PER_COUNTRY = 10
 
 def infer_country(row):
     """Guess which country a post is about from its text content."""
+    # Use existing country column if present and valid (from scraper)
+    existing = row.get("country", "")
+    if existing and existing != "unknown":
+        return existing
+
+    # Fallback: infer from text content
     text = f"{row.get('title','')} {row.get('text','')} {row.get('subreddit','')}".lower()
 
     for country, keywords in COUNTRY_KEYWORDS.items():
+        if country == "generic":
+            continue  # skip generic fallback for inference
         if any(kw in text for kw in keywords):
             return country
 
@@ -115,27 +125,41 @@ def score_texts(df, sentiment_pipe):
 # Upvote score on Reddit is a proxy for community agreement.
 # Weight sentiment by score so a +500 comment counts more than a +1 comment.
 
+def _pct_positive(s):
+    """Named helper for aggregation — percentage of positive sentiment."""
+    return (s == 1).mean() * 100
+
+def _pct_negative(s):
+    """Named helper for aggregation — percentage of negative sentiment."""
+    return (s == -1).mean() * 100
+
 def compute_weighted_sentiment(df):
-    """Compute score-weighted mean sentiment per country."""
+    """Compute score-weighted mean sentiment per country (vectorized)."""
 
-    # Clip score to avoid outliers dominating (log scale)
-    df["score_weight"] = (df["score"].clip(lower=1)).apply(lambda x: x**0.5)
+    if df.empty:
+        return pd.DataFrame(columns=["weighted_sentiment", "n_posts",
+                                     "mean_sentiment", "pct_positive", "pct_negative"])
 
-    # Weighted average
-    def wavg(group):
-        return (group["sentiment"] * group["score_weight"]).sum() / group["score_weight"].sum()
+    # Clip score to avoid outliers dominating (sqrt scale)
+    df = df.copy()
+    df["score_weight"] = df["score"].clip(lower=1) ** 0.5
 
-    by_country = df.groupby("country").apply(wavg).rename("weighted_sentiment")
-    raw_counts = df.groupby("country").agg(
+    # Vectorized weighted average per country
+    df["weighted_val"] = df["sentiment"] * df["score_weight"]
+    grouped = df.groupby("country").agg(
+        _wsum=("weighted_val", "sum"),
+        _wden=("score_weight", "sum"),
         n_posts=("sentiment", "count"),
         mean_sentiment=("sentiment", "mean"),
-        pct_positive=("sentiment", lambda x: (x == 1).mean() * 100),
-        pct_negative=("sentiment", lambda x: (x == -1).mean() * 100),
+        pct_positive=("sentiment", _pct_positive),
+        pct_negative=("sentiment", _pct_negative),
     )
 
-    return pd.concat([by_country, raw_counts], axis=1).sort_values(
-        "weighted_sentiment", ascending=False
-    )
+    # Compute weighted sentiment safely (avoid division by zero)
+    grouped["weighted_sentiment"] = grouped["_wsum"] / grouped["_wden"].replace(0, 1)
+    grouped = grouped.drop(columns=["_wsum", "_wden"])
+
+    return grouped.sort_values("weighted_sentiment", ascending=False)
 
 
 # ── Keyword Analysis ──────────────────────────────────────────────────────────
@@ -171,6 +195,10 @@ def keyword_frequency_by_country(df):
 
 def plot_sentiment_by_country(summary_df, output_dir):
     """Figure 1: Weighted Sentiment Score by Country"""
+    if summary_df.empty:
+        print("  ⚠ Skipping sentiment_by_country: no data")
+        return
+
     fig, ax = plt.subplots(figsize=(12, 6))
     
     # Sort by weighted sentiment
@@ -199,6 +227,10 @@ def plot_sentiment_by_country(summary_df, output_dir):
 
 def plot_sentiment_composition(df, output_dir):
     """Figure 2: Sentiment Composition by Country (100% stacked bar)"""
+    if df.empty:
+        print("  ⚠ Skipping sentiment_composition: no data")
+        return
+
     fig, ax = plt.subplots(figsize=(14, 6))
     
     # Calculate composition per country
@@ -241,6 +273,10 @@ def plot_sentiment_composition(df, output_dir):
 
 def plot_text_volume_by_country(df, output_dir, min_target=MIN_TEXT_PER_COUNTRY):
     """Figure 3: Text Samples Collected by Country"""
+    if df.empty:
+        print("  ⚠ Skipping text_volume_by_country: no data")
+        return
+
     fig, ax = plt.subplots(figsize=(12, 6))
     
     counts = df.groupby("country").size().sort_values(ascending=False)
@@ -270,10 +306,15 @@ def plot_text_volume_by_country(df, output_dir, min_target=MIN_TEXT_PER_COUNTRY)
 
 def plot_keyword_heatmap(kw_df, output_dir):
     """Figure 4: Design Vocabulary Distribution Heatmap"""
+    if kw_df.empty:
+        print("  ⚠ Skipping keyword_heatmap: no data")
+        return
+
     fig, ax = plt.subplots(figsize=(12, 8))
     
     # Normalize per row so countries with more text don't dominate
-    kw_norm = kw_df.div(kw_df.sum(axis=1), axis=0)
+    row_sums = kw_df.sum(axis=1).replace(0, 1)
+    kw_norm = kw_df.div(row_sums, axis=0)
     
     sns.heatmap(kw_norm, annot=True, fmt=".2f", cmap="YlOrRd",
                 linewidths=0.5, ax=ax)
@@ -289,6 +330,10 @@ def plot_keyword_heatmap(kw_df, output_dir):
 
 def plot_sentiment_confidence_distribution(df, output_dir):
     """Figure 5: Sentiment Confidence Distribution"""
+    if df.empty:
+        print("  ⚠ Skipping confidence_distribution: no data")
+        return
+
     fig, ax = plt.subplots(figsize=(12, 6))
     
     countries = df["country"].unique()
@@ -321,21 +366,53 @@ def run():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load scraped data
+    if not TEXT_CSV.exists():
+        print(f"ERROR: {TEXT_CSV} not found. Run 01_scrape_data.py first.")
+        return
+
     df = pd.read_csv(TEXT_CSV)
     print(f"Loaded {len(df)} text records")
 
-    # Tag countries
-    df["country"] = df.apply(infer_country, axis=1)
+    if df.empty:
+        print("ERROR: No text records found. Run 01_scrape_data.py first.")
+        return
+
+    # Tag countries — prefer existing country column from scraper, infer only for unknowns
+    if "country" in df.columns:
+        # Re-infer only for rows where country is missing or "unknown"
+        mask = df["country"].isna() | (df["country"] == "unknown") | (df["country"] == "")
+        if mask.any():
+            print(f"Inferring country for {mask.sum()} records without country tags...")
+            df.loc[mask, "country"] = df.loc[mask].apply(infer_country, axis=1)
+        else:
+            print(f"All {len(df)} records already have country tags from scraper.")
+    else:
+        print("No country column found — inferring from text content...")
+        df["country"] = df.apply(infer_country, axis=1)
+
     print(f"\nCountry distribution:\n{df['country'].value_counts().to_string()}\n")
 
     # Drop unknowns (can't compare them)
+    n_unknown = (df["country"] == "unknown").sum()
     df = df[df["country"] != "unknown"]
-    print(f"After removing unknowns: {len(df)} records")
+    print(f"After removing {n_unknown} unknowns: {len(df)} records")
+
+    if df.empty:
+        print("ERROR: No records left after removing unknowns. Check data quality.")
+        return
 
     # Run sentiment
     sentiment_pipe = load_sentiment_model()
     print(f"\nScoring sentiment on {len(df)} records...")
     scores_df = score_texts(df, sentiment_pipe)
+
+    # Safety check: lengths must match before concat
+    if len(df) != len(scores_df):
+        print(f"⚠ Length mismatch: df={len(df)}, scores={len(scores_df)}. Trimming to match.")
+        min_len = min(len(df), len(scores_df))
+        df = df.iloc[:min_len].reset_index(drop=True)
+        scores_df = scores_df.iloc[:min_len].reset_index(drop=True)
+
     df = pd.concat([df.reset_index(drop=True), scores_df], axis=1)
 
     # Save intermediate
