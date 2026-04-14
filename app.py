@@ -1110,8 +1110,14 @@ def report_download_pdf():
 @require_auth
 def serve_output(path):
     fp = OUTPUT_DIR / path
-    if fp.exists(): return send_file(str(fp))
-    return jsonify({"error": "Not found"}), 404
+    if not fp.exists():
+        return "", 404
+    # Cache-busting: ensure fresh data on reload / different users
+    resp = send_file(str(fp))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 # ── Design Evaluation Route ───────────────────────────────────────────────────
 

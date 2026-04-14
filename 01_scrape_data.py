@@ -506,9 +506,11 @@ def balance_image_candidates(candidates: list[dict], min_per_country: int = MIN_
         # Check if we need fallback images
         if len(unique_items) < min_per_country:
             needed = min_per_country - len(unique_items)
-            logger.info(f"Fetching {needed} fallback images for {country}")
-            fallback = fetch_fallback_images(country, needed)
-            unique_items.extend(fallback)
+            logger.warning(f"{country}: only {len(unique_items)} images (target: {min_per_country}). "
+                           f"Need {needed} more but no fallback sources available without API keys.")
+            # Note: Unsplash/Flickr/Pixabay fallbacks require API keys that are not set.
+            # The primary sources (DDG, Wikimedia, Openverse, Reddit, Mastodon, Pinterest)
+            # should provide sufficient images. If still short, try additional DDG queries.
         
         # Take up to max_per_country
         selected = unique_items[:max_per_country]
@@ -1433,6 +1435,15 @@ def run():
     logger.info(f"  Text records : {len(text_df)}")
     logger.info(f"  Images       : {len(downloaded)}")
     logger.info(f"  Countries    : {len(country_counts)} (text), {len(img_country_counts)} (images)")
+
+    if len(downloaded) == 0:
+        logger.error("⚠️  NO IMAGES DOWNLOADED — Stage 3 (image analysis) will have nothing to process!")
+        logger.error("   Possible causes: network timeouts, all images too small, or source sites blocked.")
+        logger.error("   Try re-running Stage 1, or check the logs above for specific errors.")
+    elif len(downloaded) < 50:
+        logger.warning(f"⚠️  Only {len(downloaded)} images total — results may be limited.")
+        logger.warning("   Consider re-running Stage 1 for more data.")
+
     logger.info("Next: run 03_sentiment_analysis.py")
 
 
