@@ -10,6 +10,7 @@ Reads from:
 Outputs:
   /data/output/cross_analysis.csv
   /data/output/analysis_summary.csv
+  /data/output/design_weights.json          ← correlation model (weighted scoring function)
   /data/output/cross_analysis_visualizations/
 """
 
@@ -29,6 +30,7 @@ OUTPUT_DIR      = Path("/data/output")
 CROSS_DIR       = Path("/data/output/cross_analysis_visualizations")
 OUTPUT_CSV      = OUTPUT_DIR / "cross_analysis.csv"
 SUMMARY_CSV     = OUTPUT_DIR / "analysis_summary.csv"
+WEIGHTS_JSON    = OUTPUT_DIR / "design_weights.json"
 
 
 # ── Visualization Functions ───────────────────────────────────────────────────
@@ -329,6 +331,290 @@ def plot_sentiment_heatmap(text_df, output_dir):
     print(f"  ✓ Saved: sentiment_heatmap.png")
 
 
+# ── Design-Weight Correlation Model ───────────────────────────────────────────
+
+# Ordinal encoding maps for VLM categorical attributes → 0-1 numeric scale
+ORNAMENTATION_MAP = {
+    "plain": 0.0, "minimal": 0.25, "moderate": 0.5,
+    "ornate": 0.75, "highly_ornate": 1.0,
+}
+AESTHETIC_MAP = {
+    "low": 0.0, "medium": 0.5, "high": 1.0,
+}
+
+# The four design attributes used in the correlation model
+DESIGN_ATTRIBUTES = [
+    "ornamentation_level",
+    "cultural_elements",
+    "aesthetic_appeal",
+    "motif_diversity",
+]
+
+
+def _encode_image_attributes(img_df: pd.DataFrame) -> pd.DataFrame:
+    """Encode VLM categorical attributes to numeric scores (0-1 scale).
+
+    Returns a copy of img_df with new numeric columns:
+      ornamentation_num, cultural_elements_num, aesthetic_appeal_num, motif_diversity_num
+    """
+    df = img_df.copy()
+
+    # Ornamentation: ordinal string → 0-1
+    if "ornamentation_level" in df.columns:
+        df["ornamentation_num"] = (
+            df["ornamentation_level"]
+            .astype(str)
+            .str.lower()
+            .str.strip()
+            .map(ORNAMENTATION_MAP)
+            .fillna(0.25)  # default to "minimal" if unknown
+        )
+    else:
+        df["ornamentation_num"] = 0.25
+
+    # Cultural elements: boolean → 0 / 1
+    if "cultural_elements" in df.columns:
+        df["cultural_elements_num"] = df["cultural_elements"].apply(
+            lambda x: 1.0 if str(x).lower() in ("true", "yes", "1") else 0.0
+        )
+    else:
+        df["cultural_elements_num"] = 0.0
+
+    # Aesthetic appeal: ordinal string → 0-1
+    if "aesthetic_appeal" in df.columns:
+        df["aesthetic_appeal_num"] = (
+            df["aesthetic_appeal"]
+            .astype(str)
+            .str.lower()
+            .str.strip()
+            .map(AESTHETIC_MAP)
+            .fillna(0.5)  # default to "medium"
+        )
+    else:
+        df["aesthetic_appeal_num"] = 0.5
+
+    # Motif diversity: count of unique motif types per image
+    if "motifs" in df.columns:
+        df["motif_diversity_num"] = df["motifs"].apply(
+            lambda x: min(
+                len([m for m in str(x).split("|") if m and m != "none"]) / 5.0,
+                1.0,
+            )
+        )
+    else:
+        df["motif_diversity_num"] = 0.0
+
+    return df
+
+
+def compute_design_weights(text_df: pd.DataFrame, img_df: pd.DataFrame) -> dict:
+    """Merge VLM attributes with sentiment scores by country, compute correlations,
+    and produce a weighted scoring function saved as design_weights.json.
+
+    Returns the weights dict (also written to WEIGHTS_JSON).
+    """
+    import json
+
+    print("\n=== Computing Design–Sentiment Correlation Model ===")
+
+    # ── 1. Encode image attributes ──────────────────────────────────────────
+    img_encoded = _encode_image_attributes(img_df)
+
+    # Filter to actual manhole covers if the field exists
+    if "is_manhole_cover" in img_encoded.columns:
+        before = len(img_encoded)
+        img_encoded = img_encoded[
+            img_encoded["is_manhole_cover"].apply(
+                lambda x: str(x).lower() in ("true", "yes", "1")
+            )
+        ]
+        print(f"  Filtered to manhole covers: {len(img_encoded)} / {before} images")
+
+    # ── 2. Aggregate image attributes by country (mean) ─────────────────────
+    num_cols = [c for c in img_encoded.columns if c.endswith("_num")]
+    img_by_country = (
+        img_encoded.groupby("country")[num_cols]
+        .mean()
+        .rename(columns={c: c.replace("_num", "") for c in num_cols})
+    )
+
+    # ── 3. Aggregate sentiment by country ───────────────────────────────────
+    if "score" in text_df.columns and "sentiment" in text_df.columns:
+        # Score-weighted sentiment (same logic as 03_sentiment_analysis.py)
+        tdf = text_df.copy()
+        tdf["score_weight"] = tdf["score"].clip(lower=1) ** 0.5
+        tdf["weighted_val"] = tdf["sentiment"] * tdf["score_weight"]
+        sent = tdf.groupby("country").agg(
+            _wsum=("weighted_val", "sum"), _wden=("score_weight", "sum")
+        )
+        sent_by_country = (sent["_wsum"] / sent["_wden"].replace(0, 1)).rename(
+            "sentiment"
+        )
+    else:
+        sent_by_country = (
+            text_df.groupby("country")["sentiment"].mean().rename("sentiment")
+        )
+
+    # ── 4. Merge on country ─────────────────────────────────────────────────
+    merged = img_by_country.join(sent_by_country, how="inner").dropna()
+
+    if len(merged) < 2:
+        print("  ⚠ Fewer than 2 countries with both image & sentiment data — "
+              "cannot compute correlations. Using equal weights.")
+        weights = {attr: round(1.0 / len(DESIGN_ATTRIBUTES), 4)
+                   for attr in DESIGN_ATTRIBUTES}
+        correlations = {attr: 0.0 for attr in DESIGN_ATTRIBUTES}
+        country_benchmarks = {}
+    else:
+        print(f"  Computing correlations across {len(merged)} countries: "
+              f"{sorted(merged.index.tolist())}")
+
+        # ── 5. Pearson correlation per attribute vs sentiment ────────────────
+        correlations = {}
+        for attr in DESIGN_ATTRIBUTES:
+            if attr in merged.columns:
+                r = merged[attr].corr(merged["sentiment"])
+                correlations[attr] = round(r, 4)
+            else:
+                correlations[attr] = 0.0
+
+        print("  Raw correlations:")
+        for attr, r in correlations.items():
+            print(f"    {attr:25s}  r = {r:+.4f}")
+
+        # ── 6. Convert correlations → weights (abs, normalised to sum=1) ────
+        abs_corrs = {k: abs(v) for k, v in correlations.items()}
+        total = sum(abs_corrs.values())
+
+        if total == 0:
+            # All correlations zero — fall back to equal weights
+            weights = {attr: round(1.0 / len(DESIGN_ATTRIBUTES), 4)
+                       for attr in DESIGN_ATTRIBUTES}
+        else:
+            weights = {
+                attr: round(abs_corrs[attr] / total, 4)
+                for attr in DESIGN_ATTRIBUTES
+            }
+
+        # ── 7. Country benchmarks ───────────────────────────────────────────
+        country_benchmarks = {}
+        for country in merged.index:
+            row = merged.loc[country]
+            benchmark = {"sentiment": round(float(row["sentiment"]), 4)}
+            for attr in DESIGN_ATTRIBUTES:
+                if attr in row.index:
+                    benchmark[attr] = round(float(row[attr]), 4)
+            country_benchmarks[country] = benchmark
+
+    # ── 8. Build output dict ────────────────────────────────────────────────
+    result = {
+        "weights": weights,
+        "correlations": correlations,
+        "country_benchmarks": country_benchmarks,
+        "n_countries": len(merged) if len(merged) >= 2 else 0,
+        "method": "pearson_correlation_normalized",
+        "generated_at": datetime.now().isoformat(),
+        "description": (
+            "Weights derived from Pearson correlation between VLM visual "
+            "attributes and public sentiment, aggregated by country. "
+            "Use: predicted_sentiment = sum(score[attr] * weight "
+            "for attr, weight in weights.items())"
+        ),
+    }
+
+    # ── 9. Save JSON ────────────────────────────────────────────────────────
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    WEIGHTS_JSON.write_text(json.dumps(result, indent=2))
+    print(f"\n  ✓ Saved design weights → {WEIGHTS_JSON}")
+
+    # ── 10. Print summary ───────────────────────────────────────────────────
+    print("\n  ── Design Weights (weighted scoring function) ──")
+    for attr, w in weights.items():
+        r = correlations[attr]
+        print(f"    {attr:25s}  weight = {w:.4f}  (r = {r:+.4f})")
+    print(f"    {'TOTAL':25s}  weight = {sum(weights.values()):.4f}")
+
+    if country_benchmarks:
+        print("\n  ── Country Benchmarks ──")
+        for country, bm in sorted(country_benchmarks.items()):
+            pred = sum(
+                bm.get(attr, 0) * weights[attr] for attr in DESIGN_ATTRIBUTES
+            )
+            print(f"    {country:15s}  sentiment={bm['sentiment']:+.3f}  "
+                  f"predicted={pred:+.3f}")
+
+    return result
+
+
+def plot_correlation_heatmap(weights_data: dict, output_dir: Path):
+    """Figure 8: Design Attribute ↔ Sentiment Correlation Heatmap."""
+    benchmarks = weights_data.get("country_benchmarks", {})
+    if not benchmarks:
+        print("  ⚠ No country benchmarks — skipping correlation heatmap")
+        return
+
+    # Build DataFrame: countries × design attributes + sentiment
+    rows = []
+    for country, bm in benchmarks.items():
+        row = {"country": country}
+        row.update(bm)
+        rows.append(row)
+    df = pd.DataFrame(rows).set_index("country")
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), gridspec_kw={"width_ratios": [3, 1]})
+
+    # Left: heatmap of attributes × countries
+    attr_cols = [c for c in df.columns]  # sentiment + design attributes
+    sns.heatmap(
+        df[attr_cols],
+        annot=True,
+        fmt=".2f",
+        cmap="YlGnBu",
+        linewidths=0.5,
+        ax=axes[0],
+    )
+    axes[0].set_title(
+        "Figure 8a: Design Attributes & Sentiment by Country",
+        fontsize=12,
+        fontweight="bold",
+    )
+    axes[0].set_ylabel("Country")
+    axes[0].set_xlabel("Attribute")
+
+    # Right: correlation bar chart
+    correlations = weights_data.get("correlations", {})
+    weights = weights_data.get("weights", {})
+    if correlations:
+        attrs = list(correlations.keys())
+        r_vals = [correlations[a] for a in attrs]
+        w_vals = [weights.get(a, 0) for a in attrs]
+
+        x = np.arange(len(attrs))
+        width = 0.35
+        bars_r = axes[1].barh(
+            x - width / 2, r_vals, width, label="Correlation (r)",
+            color=["#2ecc71" if v >= 0 else "#e74c3c" for v in r_vals],
+        )
+        bars_w = axes[1].barh(
+            x + width / 2, w_vals, width, label="Weight",
+            color="#3498db", alpha=0.7,
+        )
+        axes[1].set_yticks(x)
+        axes[1].set_yticklabels(attrs)
+        axes[1].axvline(0, color="gray", linewidth=0.5, linestyle="--")
+        axes[1].set_title("Figure 8b: Correlations & Weights",
+                          fontsize=12, fontweight="bold")
+        axes[1].legend(fontsize=8)
+        axes[1].set_xlabel("Value")
+    else:
+        axes[1].text(0.5, 0.5, "No correlations", ha="center", va="center")
+
+    plt.tight_layout()
+    plt.savefig(output_dir / "correlation_heatmap.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: correlation_heatmap.png")
+
+
 # ── Main Analysis Function ─────────────────────────────────────────────────────
 
 def cross_analyze():
@@ -445,11 +731,20 @@ def cross_analyze():
         print("\n=== Cross Analysis by Country ===")
         print(cross.to_string())
     
+    # ── Compute Design–Sentiment Correlation Model ──────────────────────────────
+    text_df = dfs.get('text', pd.DataFrame())
+    img_df = dfs.get('image', pd.DataFrame())
+    weights_data = None
+
+    if len(text_df) > 0 and len(img_df) > 0:
+        weights_data = compute_design_weights(text_df, img_df)
+    else:
+        print("\n  ⚠ Insufficient data for design-weight correlation model "
+              "(need both text and image data)")
+
     # ── Generate All Visualizations ─────────────────────────────────────────────
     print("\n=== Generating Cross Analysis Visualizations ===")
     
-    text_df = dfs.get('text', pd.DataFrame())
-    img_df = dfs.get('image', pd.DataFrame())
     sentiment_summary = dfs.get('sentiment_summary')
     
     if len(text_df) > 0 and len(img_df) > 0:
@@ -460,13 +755,17 @@ def cross_analyze():
         plot_coverage_summary(text_df, img_df, CROSS_DIR)
         plot_sentiment_heatmap(text_df, CROSS_DIR)
         plot_human_ai_agreement(text_df, CROSS_DIR)
+
+        # Figure 8: correlation model heatmap (requires design weights)
+        if weights_data is not None:
+            plot_correlation_heatmap(weights_data, CROSS_DIR)
     else:
         print("  ⚠ Insufficient data for visualizations")
     
     print("\n" + "=" * 50)
     print("✓ Cross Analysis Complete")
     print("=" * 50)
-    print(f"\nGenerated up to 7 visualization figures in: {CROSS_DIR}")
+    print(f"\nGenerated up to 8 visualization figures in: {CROSS_DIR}")
     print("  • Figure 1: text_vs_image_by_country.png")
     print("  • Figure 2: sentiment_vs_image_volume.png")
     print("  • Figure 3: combined_country_summary.png")
@@ -474,6 +773,9 @@ def cross_analyze():
     print("  • Figure 5: coverage_summary.png")
     print("  • Figure 6: sentiment_heatmap.png")
     print("  • Figure 7: human_ai_agreement.png (when human grades exist)")
+    print("  • Figure 8: correlation_heatmap.png (design-weight model)")
+    if weights_data is not None:
+        print(f"\n  Design weights model saved to: {WEIGHTS_JSON}")
     print(f"\nAll outputs saved to: {OUTPUT_DIR}")
 
 

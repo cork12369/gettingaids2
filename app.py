@@ -3,7 +3,7 @@ app.py — Zeabur entrypoint
 Flask dashboard to trigger pipeline stages, view outputs, and run human grading.
 """
 
-import os, csv, uuid, hmac, shutil, threading, subprocess, time, json
+import os, csv, uuid, hmac, shutil, threading, subprocess, time, json, io, re, base64, hashlib
 from pathlib import Path
 from functools import wraps
 from flask import Flask, jsonify, render_template_string, request, session, redirect, url_for, send_file
@@ -23,7 +23,9 @@ ALLOWED_SCRIPTS = frozenset([
     "03_sentiment_analysis.py", 
     "04_image_processing.py",
     "05_cross_analysis.py",
-    "06_confusion_matrix.py"
+    "06_confusion_matrix.py",
+    "07_evaluate_design.py",
+    "08_generate_report.py"
 ])
 
 # Thread-safe job state management
@@ -279,8 +281,11 @@ header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
 
 <!-- Header -->
 <header><h1>🔵 Manhole Cover Pipeline</h1><div class="header-actions">
+<a href="/evaluate" class="nav-link">🎨 Evaluate</a>
 <a href="/grade" class="nav-link">📝 Grade</a>
 <a href="/grade/team" class="nav-link">📊 Team</a>
+<a href="/report/download/csv" class="nav-link" id="report-csv" title="Download CSV report">📄 Report CSV</a>
+<a href="/report/download/pdf" class="nav-link" id="report-pdf" title="Download PDF report" target="_blank">📄 Report PDF</a>
 <button class="admin-toggle-btn" onclick="toggleAdminPanel()">⚙️ Admin</button>
 <form action="/logout" method="get" style="display:inline"><button class="auth-btn">Logout</button></form>
 </div></header>
@@ -818,12 +823,662 @@ def run_stage():
     t.start()
     return jsonify({"status": "started", "message": f"Started {script}", "script": script})
 
+# ── Report Routes ─────────────────────────────────────────────────────────────
+
+@app.route("/report/generate")
+@require_auth
+def report_generate():
+    """Run 08_generate_report.py and return status."""
+    with _job_lock:
+        if job_state["running"]:
+            return jsonify({"status": "error", "message": "Pipeline busy"})
+        job_state["running"] = True
+        job_state["script"] = "08_generate_report.py"
+        job_state["started_at"] = time.time()
+
+    def go():
+        try:
+            r = subprocess.run(["python", "08_generate_report.py"],
+                               capture_output=True, text=True, timeout=120)
+            with _job_lock:
+                job_state["log"].append(f"Report generation: exit {r.returncode}")
+        except Exception as e:
+            with _job_lock:
+                job_state["log"].append(f"Report error: {e}")
+        finally:
+            with _job_lock:
+                job_state["running"] = False
+                job_state["script"] = None
+                job_state["started_at"] = None
+
+    t = threading.Thread(target=go)
+    t.start()
+    return jsonify({"status": "started", "message": "Generating report..."})
+
+
+@app.route("/report/download/csv")
+@require_auth
+def report_download_csv():
+    """Serve the CSV report, generating on-demand if needed."""
+    csv_path = OUTPUT_DIR / "pipeline_report.csv"
+    if not csv_path.exists():
+        try:
+            subprocess.run(["python", "08_generate_report.py", "--format", "csv"],
+                           capture_output=True, text=True, timeout=120)
+        except Exception:
+            pass
+    if csv_path.exists():
+        return send_file(str(csv_path), mimetype="text/csv",
+                         as_attachment=True, download_name="pipeline_report.csv")
+    return jsonify({"error": "Report not available. Run pipeline first."}), 404
+
+
+@app.route("/report/download/pdf")
+@require_auth
+def report_download_pdf():
+    """Serve the PDF report, generating on-demand if needed."""
+    pdf_path = OUTPUT_DIR / "pipeline_report.pdf"
+    if not pdf_path.exists():
+        try:
+            subprocess.run(["python", "08_generate_report.py", "--format", "pdf"],
+                           capture_output=True, text=True, timeout=120)
+        except Exception:
+            pass
+    if pdf_path.exists():
+        return send_file(str(pdf_path), mimetype="application/pdf",
+                         as_attachment=True, download_name="pipeline_report.pdf")
+    return jsonify({"error": "Report not available. Run pipeline first."}), 404
+
+
 @app.route("/output/<path:path>")
 @require_auth
 def serve_output(path):
     fp = OUTPUT_DIR / path
     if fp.exists(): return send_file(str(fp))
     return jsonify({"error": "Not found"}), 404
+
+# ── Design Evaluation Route ───────────────────────────────────────────────────
+
+WEIGHTS_JSON = OUTPUT_DIR / "design_weights.json"
+
+# Ordinal maps (must match 05_cross_analysis.py exactly)
+_EVAL_ORNAMENTATION_MAP = {
+    "plain": 0.0, "minimal": 0.25, "moderate": 0.5,
+    "ornate": 0.75, "highly_ornate": 1.0,
+}
+_EVAL_AESTHETIC_MAP = {"low": 0.0, "medium": 0.5, "high": 1.0}
+_EVAL_ATTRIBUTES = ["ornamentation_level", "cultural_elements",
+                    "aesthetic_appeal", "motif_diversity"]
+
+EVALUATE_HTML = r"""<!DOCTYPE html><html><head><title>Design Evaluation</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(160deg,#0d1117,#161b22,#0d1117);color:#e6edf3;min-height:100vh}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+header{background:linear-gradient(135deg,#161b22,#1c2333);border:1px solid #30363d;border-radius:12px;padding:16px 24px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center}
+header h1{color:#58a6ff;font-size:20px}
+header a{color:#8b5cf6;text-decoration:none;font-size:13px;border:1px solid #8b5cf6;padding:6px 14px;border-radius:6px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:24px;margin-bottom:20px}
+.card h2{color:#58a6ff;font-size:16px;margin-bottom:16px}
+
+/* Drop zone */
+.drop-zone{border:2px dashed #30363d;border-radius:10px;padding:40px;text-align:center;cursor:pointer;transition:all .3s;margin-bottom:16px}
+.drop-zone:hover,.drop-zone.drag-over{border-color:#58a6ff;background:#58a6ff10}
+.drop-zone p{color:#8b949e;font-size:14px}
+.drop-zone .hint{font-size:12px;color:#484f58;margin-top:8px}
+
+/* Preview thumbnails */
+.preview-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.preview-item{position:relative;width:80px;height:80px;border-radius:8px;overflow:hidden;border:1px solid #30363d}
+.preview-item img{width:100%;height:100%;object-fit:cover}
+.preview-item .remove{position:absolute;top:2px;right:2px;background:#f85149;border:none;color:#fff;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center}
+
+/* Country selects */
+.country-row{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.country-row label{color:#8b949e;font-size:13px;font-weight:600}
+.country-row select{background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:8px 14px;font-size:13px;min-width:140px}
+
+/* Evaluate button */
+.btn-eval{background:linear-gradient(135deg,#238636,#2ea043);color:#fff;border:none;border-radius:8px;padding:12px 32px;font-size:15px;font-weight:600;cursor:pointer;transition:all .2s;width:100%}
+.btn-eval:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(35,134,54,.4)}
+.btn-eval:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+
+/* Loading */
+.loading{text-align:center;padding:40px;color:#8b949e;display:none}
+.loading .spinner{display:inline-block;width:24px;height:24px;border:3px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .8s linear infinite;margin-bottom:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Results */
+.results{display:none}
+.result-card{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:20px;margin-bottom:16px}
+.result-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.result-thumb{width:60px;height:60px;border-radius:6px;object-fit:cover;border:1px solid #30363d}
+.result-name{font-weight:600;font-size:15px;color:#e6edf3}
+.result-prediction{font-size:12px;padding:3px 10px;border-radius:4px;font-weight:600}
+.pred-positive{background:#23863640;color:#3fb950}
+.pred-neutral{background:#d2992240;color:#d29922}
+.pred-negative{background:#f8514940;color:#f85149}
+
+/* Score bar */
+.score-row{display:flex;align-items:center;gap:12px;margin:8px 0}
+.score-label{width:140px;font-size:12px;color:#8b949e;text-align:right}
+.score-bar-bg{flex:1;height:16px;background:#21262d;border-radius:4px;overflow:hidden;position:relative}
+.score-bar-fill{height:100%;border-radius:4px;transition:width .5s}
+.score-val{font-size:12px;color:#c9d1d9;min-width:45px}
+
+/* Benchmark */
+.benchmark{margin-top:12px;padding:12px;background:#161b22;border-radius:6px;font-size:13px}
+.benchmark .gap-negative{color:#f85149}
+.benchmark .gap-positive{color:#3fb950}
+.benchmark .gap-neutral{color:#d29922}
+
+/* Recommendation */
+.recommendation{margin-top:10px;padding:10px 14px;background:#1f6feb15;border-left:3px solid #58a6ff;border-radius:0 6px 6px 0;font-size:13px;color:#c9d1d9}
+.weakness{margin-top:6px;padding:10px 14px;background:#f8514915;border-left:3px solid #f85149;border-radius:0 6px 6px 0;font-size:13px;color:#c9d1d9}
+
+/* Download buttons */
+.download-row{display:flex;gap:10px;margin-top:20px;justify-content:center}
+.dl-btn{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px;text-decoration:none;transition:all .2s}
+.dl-btn:hover{background:#30363d;color:#fff}
+
+/* No-weights warning */
+.no-weights{background:#d2992220;border:1px solid #d29922;border-radius:8px;padding:16px;text-align:center;color:#d29922;margin-bottom:20px}
+.no-weights a{color:#58a6ff}
+</style></head><body><div class="container">
+
+<header>
+<h1>🎨 Design Evaluation Tool</h1>
+<a href="/">← Dashboard</a>
+</header>
+
+<div id="weights-warning" class="no-weights" style="display:none">
+<strong>⚠ No correlation model found.</strong> Run the <a href="/">full pipeline</a> (Stages 1–4) first to generate design_weights.json.
+</div>
+
+<div class="card">
+<h2>Upload Candidate Designs</h2>
+<div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+<p>📂 Drop images here or click to browse</p>
+<p class="hint">Max 5 images · PNG, JPG, WebP</p>
+</div>
+<input type="file" id="file-input" accept="image/*" multiple style="display:none">
+<div class="preview-row" id="preview-row"></div>
+
+<div class="country-row" id="country-row">
+<label>Compare against:</label>
+<span id="benchmark-selects">Loading...</span>
+</div>
+
+<button class="btn-eval" id="btn-eval" onclick="evaluateDesigns()" disabled>Evaluate Designs</button>
+</div>
+
+<div class="loading" id="loading">
+<div class="spinner"></div>
+<p>Analyzing designs with VLM...</p>
+</div>
+
+<div class="results" id="results">
+<h2 style="color:#58a6ff;margin-bottom:16px">Evaluation Results</h2>
+<div id="results-container"></div>
+<div class="download-row">
+<a class="dl-btn" href="/evaluate/api/download/csv" id="dl-csv">📊 Download CSV</a>
+<a class="dl-btn" href="/evaluate/api/download/pdf" id="dl-pdf" target="_blank">📄 Download PDF</a>
+</div>
+</div>
+
+</div>
+
+<script>
+var files=[];
+var countries=[];
+
+/* Check weights */
+fetch('/evaluate/api/status').then(r=>r.json()).then(d=>{
+if(!d.has_weights) document.getElementById('weights-warning').style.display='block';
+document.getElementById('btn-eval').disabled=!d.has_weights;
+countries=d.countries||[];
+renderBenchmarkSelects();
+});
+
+function renderBenchmarkSelects(){
+var c=document.getElementById('benchmark-selects');
+if(!countries.length){c.innerHTML='<span style="color:#8b949e">No countries in model yet</span>';return;}
+var html='<select id="bench1">'+countries.map(c=>'<option value="'+c+'">'+c+'</option>').join('')+'</select>';
+if(countries.length>1) html+=' <select id="bench2"><option value="">(none)</option>'+countries.map(c=>'<option value="'+c+'">'+c+'</option>').join('')+'</select>';
+c.innerHTML=html;
+}
+
+/* File handling */
+document.getElementById('file-input').addEventListener('change',function(e){addFiles(e.target.files);});
+var dz=document.getElementById('drop-zone');
+dz.addEventListener('dragover',function(e){e.preventDefault();dz.classList.add('drag-over');});
+dz.addEventListener('dragleave',function(){dz.classList.remove('drag-over');});
+dz.addEventListener('drop',function(e){e.preventDefault();dz.classList.remove('drag-over');addFiles(e.dataTransfer.files);});
+
+function addFiles(fileList){
+for(var i=0;i<fileList.length&&files.length<5;i++){
+if(!fileList[i].type.startsWith('image/'))continue;
+files.push(fileList[i]);
+}
+renderPreviews();
+document.getElementById('btn-eval').disabled=files.length===0;
+}
+
+function removeFile(idx){files.splice(idx,1);renderPreviews();document.getElementById('btn-eval').disabled=files.length===0;}
+
+function renderPreviews(){
+var row=document.getElementById('preview-row');row.innerHTML='';
+files.forEach(function(f,i){
+var div=document.createElement('div');div.className='preview-item';
+var img=document.createElement('img');img.src=URL.createObjectURL(f);
+var btn=document.createElement('button');btn.className='remove';btn.textContent='×';btn.onclick=function(){removeFile(i);};
+div.appendChild(img);div.appendChild(btn);row.appendChild(div);
+});
+}
+
+/* Evaluate */
+function evaluateDesigns(){
+if(!files.length)return;
+var fd=new FormData();
+files.forEach(function(f){fd.append('images',f);});
+var b1=document.getElementById('bench1');
+var b2=document.getElementById('bench2');
+if(b1)fd.append('benchmark1',b1.value);
+if(b2&&b2.value)fd.append('benchmark2',b2.value);
+
+document.getElementById('loading').style.display='block';
+document.getElementById('results').style.display='none';
+
+fetch('/evaluate/api/analyze',{method:'POST',body:fd})
+.then(r=>r.json())
+.then(d=>{
+document.getElementById('loading').style.display='none';
+if(d.error){alert(d.error);return;}
+renderResults(d.results,d.benchmarks);
+document.getElementById('results').style.display='block';
+})
+.catch(e=>{document.getElementById('loading').style.display='none';alert('Error: '+e);});
+}
+
+function renderResults(results,benchmarks){
+var c=document.getElementById('results-container');c.innerHTML='';
+results.sort(function(a,b){return b.score-a.score;});
+results.forEach(function(r,i){
+var predClass=r.predicted_label==='Positive'?'pred-positive':r.predicted_label==='Negative'?'pred-negative':'pred-neutral';
+var barColor=r.score>=0.6?'#3fb950':r.score>=0.35?'#d29922':'#f85149';
+
+var html='<div class="result-card">';
+html+='<div class="result-header">';
+html+='<img class="result-thumb" src="data:image/png;base64,'+r.thumbnail+'">';
+html+='<div><div class="result-name">'+(r.name||'Design '+(i+1))+'</div>';
+html+='<span class="result-prediction '+predClass+'">'+r.predicted_label+'</span>';
+html+=' <span style="color:#8b949e;font-size:13px">Score: '+r.score.toFixed(2)+'</span></div></div>';
+
+/* Overall bar */
+html+='<div class="score-row"><span class="score-label">Overall Score</span>';
+html+='<div class="score-bar-bg"><div class="score-bar-fill" style="width:'+Math.round(r.score*100)+'%;background:'+barColor+'"></div></div>';
+html+='<span class="score-val">'+r.score.toFixed(2)+'</span></div>';
+
+/* Per-attribute bars */
+var attrs=['ornamentation_level','cultural_elements','aesthetic_appeal','motif_diversity'];
+var labels=['Oramentation','Cultural Elements','Aesthetic Appeal','Motif Diversity'];
+attrs.forEach(function(attr,idx){
+var val=r.attribute_scores[attr]||0;
+var aColor=val>=0.6?'#3fb950':val>=0.35?'#d29922':'#f85149';
+html+='<div class="score-row"><span class="score-label">'+labels[idx]+'</span>';
+html+='<div class="score-bar-bg"><div class="score-bar-fill" style="width:'+Math.round(val*100)+'%;background:'+aColor+'"></div></div>';
+html+='<span class="score-val">'+val.toFixed(2)+'</span></div>';
+});
+
+/* Benchmark comparison */
+if(benchmarks&&r.benchmark_comparison){
+var bc=r.benchmark_comparison;
+html+='<div class="benchmark">';
+bc.forEach(function(b){
+var gap=b.gap;
+var gapClass=gap<0?'gap-negative':gap>0?'gap-positive':'gap-neutral';
+var gapStr=(gap>=0?'+':'')+gap.toFixed(2);
+html+='<div style="margin-bottom:4px"><strong>'+b.country+'</strong> avg: '+b.benchmark_score.toFixed(2)+' &nbsp;|&nbsp; <span class="'+gapClass+'">Gap: '+gapStr+'</span></div>';
+});
+html+='</div>';
+}
+
+/* Weakness + Recommendation */
+if(r.weakness) html+='<div class="weakness"><strong>⚠ Weakness:</strong> '+r.weakness+'</div>';
+if(r.recommendation) html+='<div class="recommendation"><strong>💡 Recommend:</strong> '+r.recommendation+'</div>';
+
+html+='</div>';
+c.innerHTML+=html;
+});
+}
+</script></body></html>"""
+
+
+def _get_weights():
+    """Load design_weights.json, return dict or None."""
+    if not WEIGHTS_JSON.exists():
+        return None
+    try:
+        return json.loads(WEIGHTS_JSON.read_text())
+    except Exception:
+        return None
+
+
+def _vlm_analyze_image(image_bytes, filename):
+    """Send image to VLM via OpenRouter and extract design attributes.
+
+    Returns dict with keys: ornamentation_level, cultural_elements,
+    aesthetic_appeal, motifs, raw_response.
+    """
+    import openai
+
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        return {"error": "OPENROUTER_API_KEY not set"}
+
+    b64 = base64.b64encode(image_bytes).decode()
+    ext = Path(filename).suffix.lower().replace(".", "")
+    mime = {"jpg": "jpeg", "jpeg": "jpeg"}.get(ext, ext)
+    data_url = f"data:image/{mime};base64,{b64}"
+
+    prompt = (
+        "Analyze this manhole cover / drain cover design. Return ONLY valid JSON "
+        "with exactly these fields:\n"
+        '{"ornamentation_level": "plain|minimal|moderate|ornate|highly_ornate", '
+        '"cultural_elements": true|false, '
+        '"aesthetic_appeal": "low|medium|high", '
+        '"motifs": "pipe|wave|floral|geometric|tree|bird|fish|text|star|anchor|none", '
+        '"is_manhole_cover": true|false, '
+        '"design_description": "one sentence summary"}'
+    )
+
+    try:
+        client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        resp = client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=[
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ]}
+            ],
+            max_tokens=300,
+            temperature=0.1,
+        )
+        raw = resp.choices[0].message.content.strip()
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        parsed = json.loads(raw)
+        parsed["raw_response"] = resp.choices[0].message.content
+        return parsed
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _encode_attributes(vlm_result):
+    """Encode VLM categorical outputs to numeric scores (0-1)."""
+    scores = {}
+
+    # Ornamentation
+    orn = str(vlm_result.get("ornamentation_level", "minimal")).lower().strip()
+    scores["ornamentation_level"] = _EVAL_ORNAMENTATION_MAP.get(orn, 0.25)
+
+    # Cultural elements
+    ce = vlm_result.get("cultural_elements", False)
+    scores["cultural_elements"] = 1.0 if str(ce).lower() in ("true", "yes", "1") else 0.0
+
+    # Aesthetic appeal
+    aa = str(vlm_result.get("aesthetic_appeal", "medium")).lower().strip()
+    scores["aesthetic_appeal"] = _EVAL_AESTHETIC_MAP.get(aa, 0.5)
+
+    # Motif diversity
+    motifs_str = str(vlm_result.get("motifs", "none")).lower()
+    motif_list = [m.strip() for m in motifs_str.split("|") if m.strip() and m.strip() != "none"]
+    scores["motif_diversity"] = min(len(motif_list) / 5.0, 1.0)
+
+    return scores
+
+
+def _compute_weighted_score(attr_scores, weights):
+    """predicted_sentiment = sum(score[attr] * weight)."""
+    return sum(attr_scores.get(attr, 0) * weights.get(attr, 0)
+               for attr in _EVAL_ATTRIBUTES)
+
+
+def _generate_recommendation(attr_scores, weights):
+    """Identify weakest area and generate actionable recommendation."""
+    # Find the weakest weighted contribution
+    contributions = {attr: attr_scores.get(attr, 0) * weights.get(attr, 0)
+                     for attr in _EVAL_ATTRIBUTES}
+    weakest = min(contributions, key=contributions.get)
+    weak_val = attr_scores.get(weakest, 0)
+
+    recs = {
+        "ornamentation_level": (
+            f"Low ornamentation (score: {weak_val:.2f}). Increase pattern complexity — "
+            "add borders, geometric bands, or radial motifs to raise visual richness."
+        ),
+        "cultural_elements": (
+            f"No cultural elements detected. Add local landmarks, regional symbols, "
+            "or heritage motifs to strengthen cultural resonance and public sentiment."
+        ),
+        "aesthetic_appeal": (
+            f"Aesthetic appeal below threshold (score: {weak_val:.2f}). Improve color "
+            "contrast, symmetry, and visual balance — consider adding decorative borders "
+            "or central emblems."
+        ),
+        "motif_diversity": (
+            f"Low motif diversity (score: {weak_val:.2f}). Incorporate additional "
+            "design elements — combine floral, geometric, and text motifs for richer "
+            "visual storytelling."
+        ),
+    }
+
+    weakness_map = {
+        "ornamentation_level": "Ornamentation level is below benchmark",
+        "cultural_elements": "No cultural elements detected",
+        "aesthetic_appeal": "Aesthetic appeal below threshold",
+        "motif_diversity": "Low motif diversity — design too plain",
+    }
+
+    return weakness_map.get(weakest, "Below benchmark"), recs.get(weakest, "Consider enhancing the design.")
+
+
+@app.route("/evaluate")
+@require_auth
+def evaluate_page():
+    return render_template_string(EVALUATE_HTML)
+
+
+@app.route("/evaluate/api/status")
+@require_auth
+def evaluate_status():
+    w = _get_weights()
+    countries = []
+    if w and "country_benchmarks" in w:
+        countries = sorted(w["country_benchmarks"].keys())
+    return jsonify({"has_weights": w is not None, "countries": countries})
+
+
+@app.route("/evaluate/api/analyze", methods=["POST"])
+@require_auth
+def evaluate_analyze():
+    weights_data = _get_weights()
+    if not weights_data:
+        return jsonify({"error": "No correlation model found. Run the full pipeline first."}), 400
+
+    weights = weights_data.get("weights", {})
+    benchmarks = weights_data.get("country_benchmarks", {})
+
+    # Get uploaded images (max 5)
+    uploaded = request.files.getlist("images")
+    if not uploaded:
+        return jsonify({"error": "No images uploaded"}), 400
+
+    uploaded = [f for f in uploaded if f.filename][:5]
+
+    bench1 = request.form.get("benchmark1", "")
+    bench2 = request.form.get("benchmark2", "")
+
+    results = []
+    for f in uploaded:
+        img_bytes = f.read()
+        thumb_b64 = base64.b64encode(img_bytes).decode()
+
+        # Run VLM
+        vlm = _vlm_analyze_image(img_bytes, f.filename)
+        if "error" in vlm:
+            results.append({
+                "name": f.filename,
+                "error": vlm["error"],
+                "score": 0, "thumbnail": thumb_b64,
+                "attribute_scores": {}, "predicted_label": "Error",
+                "benchmark_comparison": [], "weakness": vlm["error"],
+                "recommendation": "Fix VLM error and retry.",
+            })
+            continue
+
+        # Encode + score
+        attr_scores = _encode_attributes(vlm)
+        score = _compute_weighted_score(attr_scores, weights)
+
+        # Normalize to 0-1 range (weights sum to 1, attribute scores are 0-1)
+        score = max(0.0, min(1.0, score))
+
+        # Predicted label
+        label = "Positive" if score >= 0.55 else ("Negative" if score < 0.35 else "Neutral")
+
+        # Benchmark comparison
+        bench_comparison = []
+        for bc in [bench1, bench2]:
+            if bc and bc in benchmarks:
+                bm = benchmarks[bc]
+                bm_score = sum(bm.get(a, 0) * weights.get(a, 0) for a in _EVAL_ATTRIBUTES)
+                bench_comparison.append({
+                    "country": bc,
+                    "benchmark_score": round(bm_score, 4),
+                    "gap": round(score - bm_score, 4),
+                })
+
+        weakness, recommendation = _generate_recommendation(attr_scores, weights)
+
+        results.append({
+            "name": f.filename,
+            "score": round(score, 4),
+            "thumbnail": thumb_b64,
+            "attribute_scores": {k: round(v, 4) for k, v in attr_scores.items()},
+            "predicted_label": label,
+            "vlm_raw": vlm,
+            "benchmark_comparison": bench_comparison,
+            "weakness": weakness,
+            "recommendation": recommendation,
+        })
+
+    # Store in session for CSV/PDF download
+    session["eval_results"] = results
+    session["eval_benchmarks"] = {k: v for k, v in benchmarks.items()
+                                  if k in [bench1, bench2]}
+
+    return jsonify({"results": results, "benchmarks": benchmarks})
+
+
+@app.route("/evaluate/api/download/csv")
+@require_auth
+def evaluate_download_csv():
+    results = session.get("eval_results", [])
+    if not results:
+        return jsonify({"error": "No results to download"}), 404
+
+    import pandas as pd
+    rows = []
+    for r in results:
+        row = {
+            "name": r.get("name", ""),
+            "score": r.get("score", 0),
+            "predicted_label": r.get("predicted_label", ""),
+            "ornamentation_level": r.get("attribute_scores", {}).get("ornamentation_level", 0),
+            "cultural_elements": r.get("attribute_scores", {}).get("cultural_elements", 0),
+            "aesthetic_appeal": r.get("attribute_scores", {}).get("aesthetic_appeal", 0),
+            "motif_diversity": r.get("attribute_scores", {}).get("motif_diversity", 0),
+            "weakness": r.get("weakness", ""),
+            "recommendation": r.get("recommendation", ""),
+        }
+        for bc in r.get("benchmark_comparison", []):
+            row[f"benchmark_{bc['country']}_score"] = bc["benchmark_score"]
+            row[f"benchmark_{bc['country']}_gap"] = bc["gap"]
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    buf = io.BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    return send_file(buf, mimetype="text/csv",
+                     as_attachment=True, download_name="design_evaluation.csv")
+
+
+@app.route("/evaluate/api/download/pdf")
+@require_auth
+def evaluate_download_pdf():
+    results = session.get("eval_results", [])
+    if not results:
+        return jsonify({"error": "No results to download"}), 404
+
+    import pandas as pd
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    buf = io.BytesIO()
+    fig, axes = plt.subplots(len(results), 1, figsize=(10, 4 * len(results)))
+    if len(results) == 1:
+        axes = [axes]
+
+    for ax, r in zip(axes, results):
+        attrs = _EVAL_ATTRIBUTES
+        labels = ["Ornamentation", "Cultural Elem.", "Aesthetic", "Motif Diversity"]
+        vals = [r.get("attribute_scores", {}).get(a, 0) for a in attrs]
+        colors = ["#3fb950" if v >= 0.6 else "#d29922" if v >= 0.35 else "#f85149" for v in vals]
+
+        y = range(len(labels))
+        ax.barh(y, vals, color=colors, edgecolor="#30363d", height=0.6)
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels, fontsize=10)
+        ax.set_xlim(0, 1)
+        ax.set_title(f"{r.get('name', 'Design')} — Score: {r.get('score', 0):.2f} "
+                     f"({r.get('predicted_label', '')})", fontsize=12, fontweight="bold",
+                     color="#e6edf3")
+        ax.set_facecolor("#0d1117")
+        for i, v in enumerate(vals):
+            ax.text(v + 0.02, i, f"{v:.2f}", va="center", fontsize=9, color="#c9d1d9")
+
+        # Benchmark lines
+        for bc in r.get("benchmark_comparison", []):
+            ax.axvline(bc["benchmark_score"], color="#58a6ff", linestyle="--",
+                       linewidth=1, label=f'{bc["country"]} benchmark')
+
+    fig.patch.set_facecolor("#161b22")
+    for ax in axes:
+        ax.tick_params(colors="#8b949e")
+        ax.spines["bottom"].set_color("#30363d")
+        ax.spines["left"].set_color("#30363d")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        legend = ax.legend(fontsize=8, loc="lower right")
+        if legend:
+            for t in legend.get_texts():
+                t.set_color("#c9d1d9")
+
+    plt.tight_layout()
+    fig.savefig(buf, format="pdf", facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plt.close(fig)
+    return send_file(buf, mimetype="application/pdf",
+                     as_attachment=True, download_name="design_evaluation.pdf")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
