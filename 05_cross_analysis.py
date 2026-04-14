@@ -956,6 +956,162 @@ def plot_vocab_visual_heatmap(corr_data: dict, output_dir: Path):
     print(f"  ✓ Saved: vocab_visual_heatmap.png")
 
 
+# ── Design Requirements Generator ──────────────────────────────────────────────
+
+# Human-readable labels for each VLM attribute
+ATTR_LABELS = {
+    "ornamentation_level": "ornamentation level",
+    "cultural_elements":   "cultural element integration",
+    "aesthetic_appeal":    "aesthetic appeal",
+    "motif_diversity":     "motif diversity",
+}
+
+# Requirement templates keyed by (category, direction_sign)
+VISUAL_REQ_TEMPLATES = {
+    (+1, "ornamentation_level"):  "Increase ornamentation complexity to improve public sentiment — ornate designs correlate positively with approval.",
+    (-1, "ornamentation_level"):  "Reduce ornamentation complexity — simpler designs correlate with higher public approval in the sampled countries.",
+    (+1, "cultural_elements"):    "Integrate localized cultural motifs to maximize public engagement — cultural elements strongly boost sentiment.",
+    (-1, "cultural_elements"):    "Minimize overt cultural motifs — sentiment data suggests universal/neutral designs perform better.",
+    (+1, "aesthetic_appeal"):     "Prioritize high aesthetic appeal in cover design — visually attractive covers receive significantly more positive sentiment.",
+    (-1, "aesthetic_appeal"):     "Aesthetic appeal shows limited or negative correlation with sentiment — focus engineering quality over decoration.",
+    (+1, "motif_diversity"):      "Incorporate diverse visual motifs — variety in design elements correlates with higher public engagement.",
+    (-1, "motif_diversity"):      "Limit motif diversity — focused, cohesive designs outcover busy compositions in sentiment ratings.",
+}
+
+VOCAB_REQ_TEMPLATES = {
+    ("aesthetic",  "ornamentation_level", +1): "Aesthetic vocabulary correlates with higher ornamentation — leverage ornate designs as tourist/collection attractions.",
+    ("aesthetic",  "ornamentation_level", -1): "Aesthetic vocabulary correlates with simpler designs — refine minimal aesthetics for broader appeal.",
+    ("functional", "ornamentation_level", -1): "Functional vocabulary associates with plain covers — maintain industrial simplicity for safety-critical installations.",
+    ("functional", "ornamentation_level", +1): "Functional vocabulary surprisingly associates with ornate covers — ensure decorative elements do not compromise perceived safety.",
+    ("cultural",   "cultural_elements",   +1): "Cultural vocabulary aligns with cultural visual elements — strengthen local identity motifs for community engagement.",
+    ("engagement", "ornamentation_level", +1): "Engagement vocabulary (collect, photograph, tourist) strongly correlates with ornate covers — design for 'collectibility' in cultural districts.",
+    ("engagement", "ornamentation_level", -1): "Engagement vocabulary correlates with simpler designs — consider that minimalism can also drive public interest.",
+    ("negative",   "aesthetic_appeal",    -1): "Negative vocabulary inversely correlates with aesthetic appeal — poor aesthetics trigger negative public reactions; invest in visual quality.",
+    ("negative",   "ornamentation_level", +1): "Negative vocabulary correlates with higher ornamentation — avoid over-decoration that may be perceived as cluttered or excessive.",
+}
+
+HYPOTHESIS_REQ_TEMPLATES = {
+    "industrial_functional": {
+        True:  "Hypothesis confirmed: Industrial-style covers (Germany/UK) are perceived as functional — maintain this design language for utilitarian/safety contexts.",
+        False: "Hypothesis not confirmed: Industrial style does not associate with functional vocabulary — reconsider design language assumptions.",
+    },
+    "ornate_engagement": {
+        True:  "Hypothesis confirmed: Highly ornate covers drive tourism and collection behavior — leverage ornate designs for cultural/tourism districts.",
+        False: "Hypothesis not confirmed: Ornamentation does not drive engagement vocabulary — focus on other engagement triggers.",
+    },
+    "aesthetic_vocab_aesthetic_visual": {
+        True:  "Hypothesis confirmed: Public aesthetic vocabulary aligns with VLM aesthetic scores — VLM scoring is a valid proxy for human aesthetic judgment.",
+        False: "Hypothesis not confirmed: VLM aesthetic scores diverge from public aesthetic vocabulary — calibrate VLM scoring with human feedback.",
+    },
+}
+
+
+def generate_design_requirements(weights_data: dict | None,
+                                  vocab_corr: dict | None) -> pd.DataFrame:
+    """Auto-generate design requirements from correlation evidence.
+
+    Uses the actual computed correlations to produce evidence-backed design
+    requirements — no manual guesswork.  Outputs design_requirements.csv.
+
+    Returns the requirements DataFrame.
+    """
+    print("\n=== Generating Evidence-Based Design Requirements ===")
+
+    requirements = []
+    dr_id = 0
+
+    def _add(cat, req, evidence, r_val, direction, source):
+        nonlocal dr_id
+        dr_id += 1
+        requirements.append({
+            "id":         f"DR-{dr_id:02d}",
+            "category":   cat,
+            "requirement": req,
+            "evidence":   evidence,
+            "correlation_r": r_val,
+            "direction":  direction,
+            "source":     source,
+        })
+
+    # ── 1. Visual → Sentiment requirements (from design weights) ──────────
+    if weights_data and weights_data.get("correlations"):
+        correlations = weights_data["correlations"]
+        for attr in DESIGN_ATTRIBUTES:
+            r = correlations.get(attr, 0.0)
+            sign = +1 if r >= 0 else -1
+
+            # Only emit requirement if |r| exceeds threshold
+            if abs(r) >= 0.15:
+                template = VISUAL_REQ_TEMPLATES.get((sign, attr))
+                if template:
+                    evidence = (f"{attr} vs sentiment r={r:+.4f}, "
+                                f"weight={weights_data['weights'].get(attr, 0):.4f}")
+                    direction = "positive" if r > 0 else "negative"
+                    _add("visual_sentiment", template, evidence,
+                         round(r, 4), direction, "design_weights")
+
+    # ── 2. Vocab × Visual requirements (from vocab-visual correlation) ────
+    if vocab_corr and vocab_corr.get("correlation_matrix"):
+        corr_matrix = vocab_corr["correlation_matrix"]
+        p_matrix    = vocab_corr.get("p_values", {})
+
+        for (vcat, vattr, sign), template in VOCAB_REQ_TEMPLATES.items():
+            r = corr_matrix.get(vcat, {}).get(vattr, 0.0)
+            p = p_matrix.get(vcat, {}).get(vattr, 1.0)
+            # Only emit if correlation direction matches template AND |r| >= 0.15
+            actual_sign = +1 if r >= 0 else -1
+            if actual_sign == sign and abs(r) >= 0.15:
+                stars = "**" if p < 0.01 else "*" if p < 0.05 else ""
+                evidence = (f"{vcat} vocab ↔ {vattr} visual r={r:+.4f} "
+                            f"p={p:.4f}{stars}")
+                direction = "positive" if r > 0 else "negative"
+                _add("text_visual", template, evidence,
+                     round(r, 4), direction, "vocab_visual")
+
+    # ── 3. Hypothesis-driven requirements ─────────────────────────────────
+    if vocab_corr and vocab_corr.get("hypothesis_tests"):
+        for test_key, test_data in vocab_corr["hypothesis_tests"].items():
+            templates = HYPOTHESIS_REQ_TEMPLATES.get(test_key, {})
+            supported = test_data.get("supports_hypothesis", False)
+            template = templates.get(supported)
+            if template:
+                # Build evidence string from test data
+                if "r" in test_data:
+                    evidence = (f"r={test_data['r']:+.4f}, "
+                                f"p={test_data.get('p', 'N/A')}")
+                else:
+                    evidence = (f"mean_diff={test_data.get('difference', 0):+.4f}, "
+                                f"supports={supported}")
+                _add("hypothesis", template, evidence,
+                     test_data.get("r", test_data.get("difference", 0)),
+                     "supports" if supported else "refutes",
+                     "hypothesis_test")
+
+    # ── 4. Always add a baseline requirement ──────────────────────────────
+    if not requirements:
+        _add(
+            "baseline",
+            "Insufficient correlation data for specific requirements — "
+            "ensure equal numbers of images and text per country and re-run.",
+            "n/a",
+            0.0,
+            "neutral",
+            "fallback",
+        )
+
+    # ── 5. Build DataFrame and save ───────────────────────────────────────
+    req_df = pd.DataFrame(requirements)
+    csv_path = OUTPUT_DIR / "design_requirements.csv"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    req_df.to_csv(csv_path, index=False)
+    print(f"\n  Generated {len(req_df)} design requirements → {csv_path}")
+
+    for _, row in req_df.iterrows():
+        print(f"    {row['id']}  [{row['category']}]  {row['requirement'][:90]}...")
+
+    return req_df
+
+
 # ── Main Analysis Function ─────────────────────────────────────────────────────
 
 def cross_analyze():
@@ -1106,6 +1262,9 @@ def cross_analyze():
         if len(text_df) > 0 and len(img_df) > 0:
             vocab_corr = compute_vocab_visual_correlation(text_df, img_df)
             plot_vocab_visual_heatmap(vocab_corr, CROSS_DIR)
+
+        # Auto-generate design requirements from all correlation evidence
+        generate_design_requirements(weights_data, vocab_corr)
     else:
         print("  ⚠ Insufficient data for visualizations")
     
@@ -1125,6 +1284,7 @@ def cross_analyze():
     if weights_data is not None:
         print(f"\n  Design weights model saved to: {WEIGHTS_JSON}")
         print(f"  Vocab-visual correlation saved to: {OUTPUT_DIR / 'vocab_visual_correlation.json'}")
+        print(f"  Design requirements saved to: {OUTPUT_DIR / 'design_requirements.csv'}")
     print(f"\nAll outputs saved to: {OUTPUT_DIR}")
 
 
