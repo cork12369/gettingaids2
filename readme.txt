@@ -9,11 +9,13 @@ Combines image processing (visual feature extraction) with NLP sentiment analysi
 ## Pipeline Stages
 
 ```
-01_scrape_reddit.py      → Reddit posts + comments (text corpus)
-02_scrape_images.py      → Flickr + Wikimedia images by country
+01_scrape_data.py        → Reddit + image scraping (text corpus + images)
 03_sentiment_analysis.py → Sentiment scoring + keyword analysis
-04_image_processing.py   → Visual feature extraction
+04_image_processing.py   → Visual feature extraction (VLM)
 05_cross_analysis.py     → Correlate visuals with sentiment → design requirements
+06_confusion_matrix.py   → Sentiment model confusion matrix + metrics
+07_evaluate_design.py    → Score new designs against correlation model
+08_generate_report.py    → Auto-generate final report from all outputs
 ```
 
 ## Setup
@@ -55,37 +57,55 @@ manhole_pipeline/
 ├── app.py                    ← Flask dashboard + auth entrypoint
 ├── requirements.txt
 ├── zbpack.json
-├── 01_scrape_reddit.py
-├── 02_scrape_images.py
-├── 03_sentiment_analysis.py
-├── 04_image_processing.py
-├── 05_cross_analysis.py
+├── runtime.txt               ← Python version for Zeabur
+├── .gitignore
+├── DOCUMENTATION.md          ← Full technical documentation
+├── DEPLOYMENT_PLAN.txt
+├── 01_scrape_data.py         ← Reddit + image scraping
+├── 03_sentiment_analysis.py  ← Sentiment scoring + keyword analysis
+├── 04_image_processing.py    ← VLM visual feature extraction
+├── 05_cross_analysis.py      ← Correlate visuals × sentiment → design requirements
+├── 06_confusion_matrix.py    ← Sentiment model confusion matrix + metrics
+├── 07_evaluate_design.py     ← Score new designs against correlation model
+├── 08_generate_report.py     ← Auto-generate final report
 └── data/                     ← mounted at /data/ on Zeabur (persistent volume)
     ├── images/
     │   ├── japan/
     │   ├── singapore/
     │   └── ...
     ├── hf_cache/             ← HuggingFace model cache (survives restarts)
-    ├── reddit_raw.csv
-    ├── reddit_with_sentiment.csv
-    ├── image_metadata.csv
-    ├── image_features.csv
+    ├── text_with_sentiment.csv
+    ├── image_analysis.csv
     └── output/
-        ├── sentiment_by_country.png
-        ├── keyword_heatmap.png
-        ├── image_feature_comparison.png
-        ├── MAIN_FINDING_sentiment_vs_complexity.png
-        └── design_opportunity_matrix.png
+        ├── analysis_summary.csv
+        ├── cross_analysis.csv
+        ├── sentiment_summary.csv
+        ├── design_weights.json            ← correlation model (weighted scoring)
+        ├── vocab_visual_correlation.json  ← text × visual correlation matrix
+        ├── design_requirements.csv        ← evidence-backed design requirements
+        ├── confusion_matrix.json
+        └── cross_analysis_visualizations/
+            ├── text_vs_image_by_country.png      (Figure 1)
+            ├── sentiment_vs_image_volume.png     (Figure 2)
+            ├── combined_country_summary.png       (Figure 3)
+            ├── balance_ratio_chart.png            (Figure 4)
+            ├── coverage_summary.png               (Figure 5)
+            ├── sentiment_heatmap.png              (Figure 6)
+            ├── human_ai_agreement.png             (Figure 7)
+            ├── correlation_heatmap.png            (Figure 8)
+            └── vocab_visual_heatmap.png           (Figure 9)
 ```
 
 ## Run Order (local)
 
 ```bash
-python 01_scrape_reddit.py           # ~20 min
-python 02_scrape_images.py           # ~30 min
+python 01_scrape_data.py             # ~30 min  (Reddit + images)
 python 03_sentiment_analysis.py      # ~15 min
 python 04_image_processing.py        # ~10 min
-python 05_cross_analysis.py          # ~1  min
+python 05_cross_analysis.py          # ~1  min  (generates design_weights.json + design_requirements.csv)
+python 06_confusion_matrix.py        # ~1  min
+python 07_evaluate_design.py         # ~2  min  (evaluate new designs against model)
+python 08_generate_report.py         # ~1  min
 ```
 
 ## Run Order (Zeabur)
@@ -98,12 +118,14 @@ Japan, Singapore, UK, USA, Germany, France, India
 
 ## Key Outputs for Report
 
-1. sentiment_by_country.png                  → Section: Public Perception Analysis
-2. keyword_heatmap.png                       → Section: Qualitative Vocabulary Analysis
-3. image_feature_comparison.png              → Section: Visual Feature Analysis
-4. MAIN_FINDING_sentiment_vs_complexity.png  → Section: Cross-Analysis (novel finding)
-5. design_opportunity_matrix.png             → Section: Design Opportunities
-6. Terminal output from script 05            → Design Requirements DR1–DR4
+1. sentiment_heatmap.png (Fig 6)            → Section: Public Perception by Country
+2. correlation_heatmap.png (Fig 8)          → Section: Design–Sentiment Correlation Model
+3. vocab_visual_heatmap.png (Fig 9)         → Section: Text × Visual Cross-Correlation
+4. design_weights.json                      → Section: Weighted Scoring Function
+5. design_requirements.csv                  → Section: Evidence-Based Design Requirements
+6. vocab_visual_correlation.json            → Section: Hypothesis Testing Results
+7. confusion_matrix.json                    → Section: Sentiment Model Validation
+8. 08_generate_report.py output             → Section: Final Auto-Generated Report
 
 ## Novel Contribution
 No existing paper has cross-referenced manhole cover visual features with public
