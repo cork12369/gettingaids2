@@ -43,7 +43,12 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 from PIL import Image
+
+# Deterministic CV validation
+import cv2
+from sklearn.cluster import MiniBatchKMeans
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -466,6 +471,171 @@ def is_valid_image(path: Path) -> bool:
         return False
 
 
+# ── Deterministic CV Validation ───────────────────────────────────────────────
+
+# HSV hue bins for colour naming
+_HSV_COLOUR_MAP = [
+    (10,  "red"),     # H 0–10
+    (25,  "orange"),  # H 10–25
+    (35,  "yellow"),  # H 25–35
+    (85,  "green"),   # H 35–85
+    (130, "blue"),    # H 85–130
+    (170, "purple"),  # H 130–170
+    (180, "red"),     # H 170–180 wraps to red
+]
+
+def _hsv_to_colour_name(h: float, s: float, v: float) -> str:
+    """Map an HSV pixel to a named colour."""
+    if v < 20:
+        return "black"
+    if s < 30:
+        return "grey" if v < 220 else "white"
+    for upper, name in _HSV_COLOUR_MAP:
+        if h < upper:
+            return name
+    return "grey"
+
+
+def cv_edge_density(image_path: Path) -> dict:
+    """Compute edge density via Canny detection for visual complexity validation.
+
+    Returns:
+        dict with keys: cv_edge_density (float 0-1), cv_complexity_score (float),
+                        cv_complexity_label (str: low/medium/high)
+    """
+    try:
+        img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return {"cv_edge_density": None, "cv_complexity_score": None,
+                    "cv_complexity_label": None}
+
+        # Resize to standardised dimensions for consistency
+        h, w = img.shape
+        scale = min(1.0, 800 / max(h, w))
+        if scale < 1.0:
+            img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                             interpolation=cv2.INTER_AREA)
+
+        # Denoise then detect edges
+        blurred = cv2.GaussianBlur(img, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+
+        # Edge density = ratio of edge pixels to total
+        total_pixels = edges.shape[0] * edges.shape[1]
+        edge_pixels = int(np.count_nonzero(edges))
+        density = edge_pixels / total_pixels
+
+        # Map density → label
+        if density < 0.05:
+            label = "low"
+        elif density < 0.15:
+            label = "medium"
+        else:
+            label = "high"
+
+        return {
+            "cv_edge_density": round(density, 4),
+            "cv_complexity_score": round(density, 4),
+            "cv_complexity_label": label,
+        }
+    except Exception as e:
+        log.warning(f"  CV edge analysis failed: {e}")
+        return {"cv_edge_density": None, "cv_complexity_score": None,
+                "cv_complexity_label": None}
+
+
+def cv_color_analysis(image_path: Path) -> dict:
+    """Extract dominant HSV colour clusters via KMeans to validate VLM colour palette.
+
+    Returns:
+        dict with keys: cv_color_palette (str, pipe-separated), cv_color_count (int),
+                        cv_dominant_colors (list of str)
+    """
+    try:
+        img = cv2.imread(str(image_path))
+        if img is None:
+            return {"cv_color_palette": "", "cv_color_count": 0, "cv_dominant_colors": []}
+
+        # Resize for speed (max 300px on longest side)
+        h, w = img.shape[:2]
+        scale = min(1.0, 300 / max(h, w))
+        if scale < 1.0:
+            img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                             interpolation=cv2.INTER_AREA)
+
+        # Convert BGR → HSV
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+        # Reshape to pixel list
+        pixels = hsv.reshape(-1, 3).astype(np.float32)
+
+        # Filter out near-black (V < 20) and near-white (V > 235, S < 20)
+        mask = ~((pixels[:, 2] < 20) | ((pixels[:, 2] > 235) & (pixels[:, 1] < 20)))
+        filtered = pixels[mask]
+
+        if len(filtered) < 10:
+            # Too few coloured pixels — likely greyscale image
+            grey_pixels = pixels[~mask]
+            if len(grey_pixels) > 0:
+                avg_v = float(grey_pixels[:, 2].mean())
+                if avg_v < 80:
+                    return {"cv_color_palette": "black", "cv_color_count": 1,
+                            "cv_dominant_colors": ["black"]}
+                elif avg_v < 180:
+                    return {"cv_color_palette": "grey", "cv_color_count": 1,
+                            "cv_dominant_colors": ["grey"]}
+                else:
+                    return {"cv_color_palette": "white", "cv_color_count": 1,
+                            "cv_dominant_colors": ["white"]}
+            return {"cv_color_palette": "", "cv_color_count": 0, "cv_dominant_colors": []}
+
+        # Subsample if too many pixels (speed)
+        if len(filtered) > 10000:
+            indices = np.random.choice(len(filtered), 10000, replace=False)
+            filtered = filtered[indices]
+
+        # KMeans clustering (k=5)
+        n_clusters = min(5, len(filtered))
+        kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=42,
+                                  batch_size=1000, n_init=3)
+        labels = kmeans.fit_predict(filtered)
+        cluster_sizes = np.bincount(labels)
+
+        # Map cluster centroids to colour names
+        colour_counts = {}
+        for idx in range(n_clusters):
+            centroid = kmeans.cluster_centers_[idx]
+            h_val, s_val, v_val = centroid[0], centroid[1], centroid[2]
+            name = _hsv_to_colour_name(h_val, s_val, v_val)
+            if name not in colour_counts:
+                colour_counts[name] = 0
+            colour_counts[name] += int(cluster_sizes[idx])
+
+        # Sort by prevalence (most dominant first)
+        sorted_colours = sorted(colour_counts.items(), key=lambda x: -x[1])
+        dominant = [c for c, _ in sorted_colours]
+
+        return {
+            "cv_color_palette": "|".join(dominant),
+            "cv_color_count": len(dominant),
+            "cv_dominant_colors": dominant,
+        }
+    except Exception as e:
+        log.warning(f"  CV colour analysis failed: {e}")
+        return {"cv_color_palette": "", "cv_color_count": 0, "cv_dominant_colors": []}
+
+
+def _jaccard_similarity(set_a, set_b) -> float:
+    """Compute Jaccard similarity between two sets of colour names."""
+    a = set(c.lower().strip() for c in set_a if c)
+    b = set(c.lower().strip() for c in set_b if c)
+    if not a and not b:
+        return 1.0  # Both empty — perfect match
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def process_images():
@@ -552,6 +722,42 @@ def process_images():
                 row["ai_error"] = str(e)
                 row["ai_pipeline"] = "error"
 
+        # ── Deterministic CV validation (always runs) ──────────────────────
+        cv_edge = cv_edge_density(img_path)
+        cv_colour = cv_color_analysis(img_path)
+        row.update(cv_edge)
+        row.update({
+            "cv_color_palette":  cv_colour["cv_color_palette"],
+            "cv_color_count":    cv_colour["cv_color_count"],
+        })
+
+        # Validate VLM vs CV
+        vlm_complexity = row.get("visual_complexity", "")
+        cv_complexity = cv_edge.get("cv_complexity_label")
+        row["complexity_agreement"] = (
+            bool(vlm_complexity) and bool(cv_complexity)
+            and vlm_complexity.lower() == cv_complexity.lower()
+        ) if vlm_complexity and cv_complexity else None
+
+        vlm_palette = row.get("colour_palette", "")
+        if isinstance(vlm_palette, str) and vlm_palette:
+            vlm_colours = set(c.strip().lower() for c in vlm_palette.split("|") if c.strip())
+        else:
+            vlm_colours = set()
+        cv_colours = set(c.lower() for c in cv_colour.get("cv_dominant_colors", []))
+        row["color_palette_overlap"] = round(_jaccard_similarity(vlm_colours, cv_colours), 3)
+
+        cv_log_parts = []
+        if cv_edge.get("cv_edge_density") is not None:
+            cv_log_parts.append(f"edge_density={cv_edge['cv_edge_density']}")
+            cv_log_parts.append(f"complexity={cv_edge['cv_complexity_label']}")
+        if cv_colour.get("cv_color_count"):
+            cv_log_parts.append(f"colors={cv_colour['cv_color_count']}")
+        if row["color_palette_overlap"] is not None:
+            cv_log_parts.append(f"overlap={row['color_palette_overlap']}")
+        if cv_log_parts:
+            print(f"    ✓ CV: " + "  ".join(cv_log_parts))
+
         rows.append(row)
 
         # Rate-limit pause between AI calls
@@ -576,6 +782,23 @@ def process_images():
         if valid.any():
             mc_rate = df.loc[valid, "is_manhole_cover"].astype(bool).mean() * 100
             print(f"  Manhole covers  : {mc_rate:.1f}% of analysed images")
+
+    # CV validation summary
+    if "cv_edge_density" in df.columns:
+        edge_valid = df["cv_edge_density"].notna()
+        if edge_valid.any():
+            avg_density = df.loc[edge_valid, "cv_edge_density"].mean()
+            print(f"  CV Edge Density : avg={avg_density:.4f}")
+    if "complexity_agreement" in df.columns:
+        agree_valid = df["complexity_agreement"].notna()
+        if agree_valid.any():
+            agree_rate = df.loc[agree_valid, "complexity_agreement"].mean() * 100
+            print(f"  VLM-CV Agreement: {agree_rate:.1f}% (visual_complexity)")
+    if "color_palette_overlap" in df.columns:
+        overlap_valid = df["color_palette_overlap"].notna()
+        if overlap_valid.any():
+            avg_overlap = df.loc[overlap_valid, "color_palette_overlap"].mean()
+            print(f"  Color Overlap   : avg Jaccard={avg_overlap:.3f}")
 
     print(f"\n  Output: {OUTPUT_CSV}")
     if ai_mode:
