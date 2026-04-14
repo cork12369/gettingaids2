@@ -274,6 +274,15 @@ header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
 .pipeline-status .idle{color:#8b949e}
 .pipeline-status .script{color:#58a6ff}
 
+/* ── Pipeline Progress ── */
+.pipeline-progress{background:linear-gradient(135deg,#161b22,#1c2333);border:1px solid #1f6feb40;border-radius:10px;padding:16px 20px;margin:16px 0;box-shadow:0 0 20px rgba(31,111,235,0.1)}
+.progress-info{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.progress-label{color:#58a6ff;font-size:14px;font-weight:600}
+.progress-time{color:#8b949e;font-size:13px;font-variant-numeric:tabular-nums}
+.progress-track{width:100%;height:10px;background:#21262d;border-radius:6px;overflow:hidden}
+.progress-animated{height:100%;width:100%;background:linear-gradient(90deg,#1f6feb,#58a6ff,#1f6feb);background-size:200% 100%;border-radius:6px;animation:progressShimmer 1.5s ease infinite}
+@keyframes progressShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
 /* ── Divider ── */
 .divider{height:1px;background:linear-gradient(90deg,transparent,#30363d,transparent);margin:24px 0}
 </style>
@@ -284,6 +293,7 @@ header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
 <a href="/evaluate" class="nav-link">🎨 Evaluate</a>
 <a href="/grade" class="nav-link">📝 Grade</a>
 <a href="/grade/team" class="nav-link">📊 Team</a>
+<a href="/history" class="nav-link">📜 History</a>
 <a href="/report/download/csv" class="nav-link" id="report-csv" title="Download CSV report">📄 Report CSV</a>
 <a href="/report/download/pdf" class="nav-link" id="report-pdf" title="Download PDF report" target="_blank">📄 Report PDF</a>
 <button class="admin-toggle-btn" onclick="toggleAdminPanel()">⚙️ Admin</button>
@@ -372,6 +382,12 @@ header h1{color:#58a6ff;font-size:20px;font-weight:600;letter-spacing:-0.3px}
 <button class="btn" onclick="runStage('05_cross_analysis.py')">Cross Analysis</button>
 <button class="btn btn-stage6" onclick="runStage('06_confusion_matrix.py')">Stage 6: Confusion Matrix</button></div>
 
+<!-- Pipeline Progress Bar -->
+<div class="pipeline-progress" id="pipeline-progress" style="display:none">
+<div class="progress-info"><span id="progress-label" class="progress-label">Running...</span><span id="progress-time" class="progress-time">0s</span></div>
+<div class="progress-track"><div class="progress-animated" id="progress-fill"></div></div>
+</div>
+
 <!-- Admin Section -->
 <div class="admin-section"><h3>⚙️ Admin Controls</h3>
 <div class="warning">⚠️ Requires ADMIN_RESET_PASSWORD. Use with caution.</div>
@@ -438,9 +454,26 @@ function showLogs(){var out=document.getElementById('output-log');out.textConten
 function toggleAdminPanel(){var s=document.querySelector('.admin-section');s.style.display=s.style.display==='none'?'block':'none';}
 
 /* ── Auto-refresh ── */
-setInterval(()=>{fetch('/counts').then(r=>r.json()).then(d=>{if(d.scrape)updateStatus('scrape','completed',d.scrape);if(d.sentiment)updateStatus('sentiment','completed',d.sentiment);if(d.images)updateStatus('images','completed',d.images);if(d.cross)updateStatus('cross','completed',d.cross);if(d.confusion)updateStatus('confusion','completed','✓');});updatePipelineStatus();},3000);
+setInterval(()=>{fetch('/counts').then(r=>r.json()).then(d=>{if(d.scrape)updateStatus('scrape','completed',d.scrape);if(d.sentiment)updateStatus('sentiment','completed',d.sentiment);if(d.images)updateStatus('images','completed',d.images);if(d.cross)updateStatus('cross','completed',d.cross);if(d.confusion)updateStatus('confusion','completed','✓');});updatePipelineStatus();updateProgressBar();},3000);
 setTimeout(updatePipelineStatus,100);
 loadAllGraphs();
+
+/* ── Progress Bar ── */
+function updateProgressBar(){
+fetch('/admin/status').then(r=>r.json()).then(d=>{
+var bar=document.getElementById('pipeline-progress');
+var label=document.getElementById('progress-label');
+var timer=document.getElementById('progress-time');
+if(d.running){
+bar.style.display='block';
+var friendly=d.script?d.script.replace('.py','').replace(/_/g,' '):'Running...';
+label.textContent=friendly;
+timer.textContent=d.started_ago+'s';
+}else{
+bar.style.display='none';
+}
+}).catch(()=>{});
+}
 </script></body></html>"""
 
 GRADE_HTML = """<!DOCTYPE html><html><head><title>Grade Snippets</title>
@@ -538,6 +571,120 @@ var tb=document.getElementById('tbody');tb.innerHTML='';
 d.graders.forEach(function(g){var pct=Math.round(g.graded/g.total*100);
 tb.innerHTML+='<tr><td>'+g.id+'</td><td>'+g.chunk+'</td><td><div class="pbar"><div class="pfill" style="width:'+pct+'%"></div></div></td><td>'+g.graded+'/'+g.total+'</td></tr>';});});}
 load();setInterval(load,15000);
+</script></body></html>"""
+
+HISTORY_HTML = """<!DOCTYPE html><html><head><title>Scrape History</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:linear-gradient(160deg,#0d1117,#161b22,#0d1117);color:#e6edf3;min-height:100vh}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+header{background:linear-gradient(135deg,#161b22,#1c2333);border:1px solid #30363d;border-radius:12px;padding:16px 24px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center}
+header h1{color:#58a6ff;font-size:20px}
+header a{color:#8b5cf6;text-decoration:none;font-size:13px;border:1px solid #8b5cf6;padding:6px 14px;border-radius:6px}
+
+/* Summary cards */
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:28px}
+.summary-card{background:linear-gradient(135deg,#161b22,#1c2333);border:1px solid #30363d;border-radius:10px;padding:20px;text-align:center}
+.summary-card h3{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.summary-card .num{font-size:32px;font-weight:700;color:#58a6ff}
+.summary-card .sub{color:#8b949e;font-size:12px;margin-top:4px}
+
+/* Tables */
+.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;margin-bottom:20px}
+.card h2{color:#58a6ff;font-size:16px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse}
+th{color:#8b949e;text-align:left;border-bottom:1px solid #30363d;padding:10px 12px;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:10px 12px;border-bottom:1px solid #21262d;font-size:13px}
+tr:hover td{background:#161b2280}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.tag-ddg{background:#1f6feb30;color:#58a6ff}
+.tag-wiki{background:#23863630;color:#3fb950}
+.tag-other{background:#8b5cf630;color:#c4b5fd}
+.count-bar{height:6px;background:#21262d;border-radius:3px;overflow:hidden;min-width:60px;display:inline-block;vertical-align:middle}
+.count-bar .fill{height:100%;background:linear-gradient(90deg,#1f6feb,#58a6ff);border-radius:3px}
+.no-data{text-align:center;padding:40px;color:#484f58;font-style:italic}
+.timestamp{color:#8b949e;font-size:12px}
+</style></head><body><div class="container">
+
+<header><h1>📜 Data Collection History</h1>
+<div><a href="/">← Dashboard</a></div></header>
+
+<!-- Summary -->
+<div class="summary-grid" id="summary">
+<div class="summary-card"><h3>Total Text Records</h3><div class="num" id="total-text">—</div><div class="sub" id="text-sources"></div></div>
+<div class="summary-card"><h3>Total Images</h3><div class="num" id="total-images">—</div><div class="sub" id="img-sources"></div></div>
+<div class="summary-card"><h3>Countries</h3><div class="num" id="total-countries">—</div><div class="sub">with data</div></div>
+<div class="summary-card"><h3>Last Scraped</h3><div class="num timestamp" id="last-scrape" style="font-size:18px">—</div></div>
+</div>
+
+<!-- Text by Country -->
+<div class="card"><h2>📝 Text Records by Country</h2>
+<div id="text-table"><div class="no-data">No text data yet. Run Stage 1 (Scrape) first.</div></div></div>
+
+<!-- Images by Country -->
+<div class="card"><h2>🖼️ Images by Country</h2>
+<div id="image-table"><div class="no-data">No image data yet. Run Stage 1 (Scrape) first.</div></div></div>
+
+</div>
+
+<script>
+function load(){fetch('/history/api').then(r=>r.json()).then(d=>{
+document.getElementById('total-text').textContent=d.total_text||0;
+document.getElementById('total-images').textContent=d.total_images||0;
+document.getElementById('total-countries').textContent=d.countries?d.countries.length:0;
+document.getElementById('last-scrape').textContent=d.last_scrape||'Never';
+
+/* Source breakdown labels */
+var ts=d.text_sources||{};
+var tsParts=[];
+if(ts.ddg_snippet)tsParts.push('DuckDuckGo: '+ts.ddg_snippet);
+if(ts.full_page)tsParts.push('Full Page: '+ts.full_page);
+document.getElementById('text-sources').textContent=tsParts.join(' · ')||'—';
+
+var is=d.image_sources||{};
+var isParts=[];
+if(is.ddg_image)isParts.push('DuckDuckGo: '+is.ddg_image);
+if(is.wikimedia)isParts.push('Wikimedia: '+is.wikimedia);
+if(is.other)isParts.push('Other: '+is.other);
+document.getElementById('img-sources').textContent=isParts.join(' · ')||'—';
+
+/* Text table */
+var tt=document.getElementById('text-table');
+if(d.text_by_country&&d.text_by_country.length){
+var maxT=Math.max.apply(null,d.text_by_country.map(function(c){return c.count;}));
+var h='<table><tr><th>Country</th><th>Records</th><th style="width:40%">Volume</th><th>Sources</th></tr>';
+d.text_by_country.forEach(function(r){
+var pct=Math.round(r.count/maxT*100);
+var srcTags=[];
+if(r.ddg_snippet)srcTags.push('<span class="tag tag-ddg">DDG ('+r.ddg_snippet+')</span>');
+if(r.full_page)srcTags.push('<span class="tag tag-wiki">Page ('+r.full_page+')</span>');
+if(r.other)srcTags.push('<span class="tag tag-other">Other ('+r.other+')</span>');
+h+='<tr><td><strong>'+r.country+'</strong></td><td>'+r.count+'</td>';
+h+='<td><div class="count-bar" style="width:100%"><div class="fill" style="width:'+pct+'%"></div></div></td>';
+h+='<td>'+srcTags.join(' ')+'</td></tr>';
+});
+h+='</table>';tt.innerHTML=h;
+}
+
+/* Image table */
+var it=document.getElementById('image-table');
+if(d.image_by_country&&d.image_by_country.length){
+var maxI=Math.max.apply(null,d.image_by_country.map(function(c){return c.count;}));
+var h='<table><tr><th>Country</th><th>Images</th><th style="width:40%">Volume</th><th>Sources</th></tr>';
+d.image_by_country.forEach(function(r){
+var pct=Math.round(r.count/maxI*100);
+var srcTags=[];
+if(r.ddg_image)srcTags.push('<span class="tag tag-ddg">DDG ('+r.ddg_image+')</span>');
+if(r.wikimedia)srcTags.push('<span class="tag tag-wiki">Wiki ('+r.wikimedia+')</span>');
+if(r.other)srcTags.push('<span class="tag tag-other">Other ('+r.other+')</span>');
+h+='<tr><td><strong>'+r.country+'</strong></td><td>'+r.count+'</td>';
+h+='<td><div class="count-bar" style="width:100%"><div class="fill" style="width:'+pct+'%"></div></div></td>';
+h+='<td>'+srcTags.join(' ')+'</td></tr>';
+});
+h+='</table>';it.innerHTML=h;
+}
+}).catch(()=>{});}
+load();
 </script></body></html>"""
 
 # ── Auth Routes ───────────────────────────────────────────────────────────────
@@ -657,6 +804,75 @@ def grade_progress():
         "chunks_claimed": len(set(a["chunk_index"] for a in assignments)),
         "graders": graders
     })
+
+# ── History Routes ────────────────────────────────────────────────────────────
+
+@app.route("/history")
+@require_auth
+def history_page():
+    return render_template_string(HISTORY_HTML)
+
+@app.route("/history/api")
+@require_auth
+def history_api():
+    result = {
+        "total_text": 0, "total_images": 0,
+        "countries": [], "last_scrape": "Never",
+        "text_sources": {}, "image_sources": {},
+        "text_by_country": [], "image_by_country": [],
+    }
+    try:
+        import pandas as pd
+        # Text data
+        text_path = DATA_DIR / "text_raw.csv"
+        if text_path.exists():
+            df = pd.read_csv(text_path)
+            result["total_text"] = len(df)
+            if "source" in df.columns:
+                src = df["source"].value_counts().to_dict()
+                result["text_sources"] = {k: int(v) for k, v in src.items()}
+            if "country" in df.columns:
+                grp = df.groupby("country")
+                for country, group in grp:
+                    row = {"country": country, "count": len(group)}
+                    if "source" in group.columns:
+                        for s, c in group["source"].value_counts().items():
+                            row[s] = int(c)
+                    result["text_by_country"].append(row)
+            result["countries"] = sorted(df["country"].unique().tolist()) if "country" in df.columns else []
+            import datetime
+            mtime = text_path.stat().st_mtime
+            result["last_scrape"] = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
+        # Image data
+        img_path = DATA_DIR / "image_metadata.csv"
+        if img_path.exists():
+            df = pd.read_csv(img_path)
+            result["total_images"] = len(df)
+            if "source" in df.columns:
+                src = df["source"].value_counts().to_dict()
+                result["image_sources"] = {k: int(v) for k, v in src.items()}
+            if "country" in df.columns:
+                grp = df.groupby("country")
+                for country, group in grp:
+                    row = {"country": country, "count": len(group)}
+                    if "source" in group.columns:
+                        for s, c in group["source"].value_counts().items():
+                            row[s] = int(c)
+                    result["image_by_country"].append(row)
+                # Merge countries
+                img_countries = set(result["countries"])
+                img_countries.update(df["country"].unique().tolist())
+                result["countries"] = sorted(img_countries)
+
+            # Use most recent mtime
+            import datetime
+            mtime = img_path.stat().st_mtime
+            if mtime > (text_path.stat().st_mtime if text_path.exists() else 0):
+                result["last_scrape"] = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+    except Exception as e:
+        result["error"] = str(e)
+    return jsonify(result)
 
 # ── Pipeline Routes ───────────────────────────────────────────────────────────
 
