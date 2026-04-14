@@ -9,11 +9,7 @@ Install: pip install duckduckgo-search requests beautifulsoup4 pillow pandas
 No API keys required.
 """
 
-import os
-import time
-import random
-import requests
-import pandas as pd
+import os, json, time, random, requests, pandas as pd
 from pathlib import Path
 from io import BytesIO
 from PIL import Image
@@ -874,6 +870,58 @@ def scrape_openverse(country: str, queries: list[str], per_page: int = 20) -> li
     return results
 
 
+# ── Mastodon Scraping (public API, no auth needed) ───────────────────────────
+
+MASTODON_INSTANCES = [
+    "mastodon.social",
+    "mastodon.art",
+    "fosstodon.org",
+    "mastodon.online",
+    "mstdn.social",
+]
+
+MASTODON_QUERIES = {
+    "japan":     ["#manholecover japan", "#manholeart japan", "japanese manhole cover", "#pokefuta"],
+    "singapore": ["#manholecover singapore", "singapore drain cover design"],
+    "uk":        ["#manholecover london", "british manhole cover", "#draincover uk"],
+    "usa":       ["#manholecover new york", "american manhole cover art"],
+    "germany":   ["#kanaldeckel", "german manhole cover design", "#manhole germany"],
+    "france":    ["#manholecover paris", "french manhole cover art", "regard fonte"],
+    "india":     ["#manholecover india", "india drain cover design"],
+    "italy":     ["#manholecover italy", "italian manhole design", "chiusino"],
+    "spain":     ["#manholecover spain", "spanish drain cover"],
+    "australia": ["#manholecover australia", "sydney drain cover"],
+    "canada":    ["#manholecover canada", "toronto manhole cover"],
+    "brazil":    ["#manholecover brazil", "boca de lobo design"],
+    "netherlands": ["#manholecover netherlands", "dutch drain cover"],
+    "south_korea": ["#manholecover korea", "seoul manhole art"],
+    "thailand":  ["#manholecover thailand", "bangkok drain cover"],
+    "mexico":    ["#manholecover mexico", "alcantarilla design"],
+}
+
+
+# ── Pinterest Scraping ────────────────────────────────────────────────────────
+
+PINTEREST_QUERIES = {
+    "japan":     ["japanese manhole cover art", "pokemon manhole cover japan", "pokefuta design"],
+    "singapore": ["singapore manhole cover design", "singapore drain cover art"],
+    "uk":        ["london manhole cover design", "british drain cover art"],
+    "usa":       ["new york manhole cover art", "american manhole design"],
+    "germany":   ["kanaldeckel design germany", "german manhole cover art"],
+    "france":    ["paris manhole cover design", "french utility cover art"],
+    "india":     ["india manhole cover design", "mumbai drain cover"],
+    "italy":     ["italian manhole cover design", "rome chiusino art"],
+    "spain":     ["spanish manhole cover", "madrid drain cover design"],
+    "australia": ["australia manhole cover", "sydney drain cover design"],
+    "canada":    ["canada manhole cover art", "toronto drain cover"],
+    "brazil":    ["brazil manhole cover", "boca de lobo design art"],
+    "netherlands": ["netherlands manhole cover", "dutch drain cover design"],
+    "south_korea": ["korea manhole cover art", "seoul drain cover design"],
+    "thailand":  ["thailand manhole cover design", "bangkok drain cover"],
+    "mexico":    ["mexico manhole cover art", "mexican drain cover design"],
+}
+
+
 # ── Reddit JSON Scraping (FREE, no auth needed) ──────────────────────────────
 
 REDDIT_SUBREDDITS = [
@@ -996,6 +1044,223 @@ def scrape_reddit(country: str, queries: list[str], limit: int = 25) -> tuple[li
     return text_results, image_results
 
 
+# ── Mastodon Scraping Functions ───────────────────────────────────────────────
+
+def scrape_mastodon(country: str, queries: list[str], limit: int = 20) -> tuple[list[dict], list[dict]]:
+    """
+    Scrape Mastodon via public search API (no auth needed).
+    Searches across multiple instances for posts about manhole covers.
+    Returns (text_records, image_records).
+    """
+    text_results = []
+    image_results = []
+
+    for query in queries:
+        for instance in MASTODON_INSTANCES:
+            logger.info(f"Mastodon: '{query}' @ {instance} [{country}]")
+            try:
+                search_url = f"https://{instance}/api/v2/search"
+                resp = requests.get(
+                    search_url,
+                    params={
+                        "q": query,
+                        "type": "statuses",
+                        "limit": limit,
+                    },
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; research-scraper/1.0)"},
+                    timeout=REQUEST_TIMEOUT,
+                )
+
+                if resp.status_code == 401:
+                    # Instance requires auth for search, skip
+                    continue
+                if resp.status_code == 429:
+                    logger.warning(f"Mastodon rate limited on {instance}, backing off...")
+                    time.sleep(5)
+                    continue
+
+                resp.raise_for_status()
+                data = resp.json()
+                statuses = data.get("statuses", [])
+
+                for status in statuses:
+                    # Skip boosts (keep original content only)
+                    if status.get("reblog"):
+                        continue
+
+                    content_html = status.get("content", "")
+                    # Strip HTML tags
+                    content_text = BeautifulSoup(content_html, "html.parser").get_text(separator=" ").strip()
+                    status_url = status.get("url", "")
+                    account = status.get("account", {}).get("acct", "")
+
+                    # Text record
+                    if len(content_text) > 30:
+                        text_results.append({
+                            "country": country,
+                            "query":   query,
+                            "source":  "mastodon",
+                            "url":     status_url,
+                            "text":    content_text[:3000],
+                            "score":   2,
+                        })
+
+                    # Image records: media attachments
+                    for media in status.get("media_attachments", []):
+                        media_url = media.get("url", "")
+                        media_type = media.get("type", "")
+                        if media_url and media_type == "image":
+                            image_results.append({
+                                "country": country,
+                                "query":   query,
+                                "source":  "mastodon",
+                                "url":     media_url,
+                                "title":   content_text[:100] if content_text else "",
+                            })
+
+                # Be polite between instances
+                time.sleep(1.5)
+
+            except requests.exceptions.ConnectionError:
+                logger.warning(f"Mastodon: {instance} unreachable, skipping")
+                continue
+            except Exception as e:
+                logger.error(f"Mastodon error on {instance} for '{query}': {e}")
+                sleep()
+
+        # Delay between queries
+        sleep()
+
+    return text_results, image_results
+
+
+# ── Pinterest Scraping Functions ──────────────────────────────────────────────
+
+def scrape_pinterest(country: str, queries: list[str], limit: int = 20) -> tuple[list[dict], list[dict]]:
+    """
+    Scrape Pinterest via internal search API (no auth needed).
+    Uses Pinterest's BaseSearchResource endpoint.
+    Returns (text_records, image_records).
+    Gracefully fails if blocked.
+    """
+    text_results = []
+    image_results = []
+
+    pinterest_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://www.pinterest.com/",
+    }
+
+    for query in queries:
+        logger.info(f"Pinterest: '{query}' [{country}]")
+        try:
+            # Pinterest's internal search API
+            search_url = "https://www.pinterest.com/resource/BaseSearchResource/get/"
+            resp = requests.get(
+                search_url,
+                params={
+                    "data": json.dumps({
+                        "options": {
+                            "query": query,
+                            "page_size": limit,
+                        },
+                        "context": {},
+                    }),
+                },
+                headers=pinterest_headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            if resp.status_code == 403:
+                logger.warning(f"Pinterest blocked search for '{query}' (403)")
+                sleep()
+                continue
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Navigate Pinterest's nested response structure
+            results_data = (
+                data.get("resource_response", {})
+                .get("data", {})
+                .get("results", [])
+            )
+
+            if not results_data:
+                # Try alternative structure
+                results_data = (
+                    data.get("resource_response", {})
+                    .get("data", [])
+                )
+
+            for pin in results_data:
+                if not isinstance(pin, dict):
+                    continue
+
+                pin_id = pin.get("id", "")
+                pin_url = f"https://www.pinterest.com/pin/{pin_id}/" if pin_id else ""
+
+                # Extract description (text content)
+                description = (
+                    pin.get("description", "") or
+                    pin.get("rich_summary", {}).get("display_description", "") or
+                    pin.get("title", "") or
+                    ""
+                ).strip()
+
+                # Text record
+                if len(description) > 30:
+                    text_results.append({
+                        "country": country,
+                        "query":   query,
+                        "source":  "pinterest",
+                        "url":     pin_url,
+                        "text":    description[:3000],
+                        "score":   2,
+                    })
+
+                # Image record: extract best image URL
+                img_url = ""
+                images = pin.get("images", {})
+                if isinstance(images, dict):
+                    # Prefer largest available
+                    for size_key in ["orig", "x736", "x564", "x474", "x342", "x236"]:
+                        img_data = images.get(size_key, {})
+                        if isinstance(img_data, dict) and img_data.get("url"):
+                            img_url = img_data["url"]
+                            break
+                    # Fallback: try direct url field
+                    if not img_url:
+                        img_url = images.get("url", "")
+
+                # Alternative image location
+                if not img_url:
+                    img_url = pin.get("image_url", "") or pin.get("thumbnail", {}).get("url", "")
+
+                if img_url:
+                    image_results.append({
+                        "country": country,
+                        "query":   query,
+                        "source":  "pinterest",
+                        "url":     img_url,
+                        "title":   description[:100] if description else pin.get("title", ""),
+                    })
+
+            sleep()
+
+        except json.JSONDecodeError:
+            logger.warning(f"Pinterest returned non-JSON for '{query}'")
+            sleep()
+        except Exception as e:
+            logger.error(f"Pinterest error for '{query}': {e}")
+            sleep()
+
+    return text_results, image_results
+
+
 # ── Image Downloader ──────────────────────────────────────────────────────────
 
 def download_images(metadata_list: list[dict]) -> list[dict]:
@@ -1083,6 +1348,24 @@ def run():
         all_text.extend(rd_text)
         all_images.extend(rd_images)
         logger.info(f"  → {len(rd_text)} text, {len(rd_images)} images")
+
+    # ── Mastodon scraping (public API, no auth) ───────────────────────────────
+    logger.info("=== MASTODON SCRAPING ===")
+    for country, queries in MASTODON_QUERIES.items():
+        logger.info(f"[{country.upper()}] Mastodon")
+        md_text, md_images = scrape_mastodon(country, queries)
+        all_text.extend(md_text)
+        all_images.extend(md_images)
+        logger.info(f"  → {len(md_text)} text, {len(md_images)} images")
+
+    # ── Pinterest scraping ─────────────────────────────────────────────────────
+    logger.info("=== PINTEREST SCRAPING ===")
+    for country, queries in PINTEREST_QUERIES.items():
+        logger.info(f"[{country.upper()}] Pinterest")
+        pin_text, pin_images = scrape_pinterest(country, queries)
+        all_text.extend(pin_text)
+        all_images.extend(pin_images)
+        logger.info(f"  → {len(pin_text)} text, {len(pin_images)} images")
 
     # Balance text records
     logger.info("=== BALANCING TEXT RECORDS ===")
