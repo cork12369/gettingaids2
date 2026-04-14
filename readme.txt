@@ -3,11 +3,11 @@
 
 ## Overview
 
-Data-driven design opportunity identification for manhole covers across 7 countries.
+Data-driven design opportunity identification for manhole covers across 16 countries.
 The pipeline combines two independent data streams — **NLP sentiment analysis** of
-public text (Reddit, travel blogs) and **VLM visual feature extraction** of cover
-images — into a correlation model that identifies which design attributes drive
-positive public engagement.  All requirements are generated from computed
+public text (Reddit, Mastodon, Pinterest, travel blogs, DuckDuckGo) and **VLM visual
+feature extraction** of cover images — into a correlation model that identifies which
+design attributes drive positive public engagement.  All requirements are generated from computed
 correlations (no manual guesswork), making every recommendation traceable to a
 specific statistical evidence point.
 
@@ -20,7 +20,7 @@ specific statistical evidence point.
 
 ### Countries Covered
 
-Japan, Singapore, UK, USA, Germany, France, India
+Japan, Singapore, UK, USA, Germany, France, India, Italy, Spain, Australia, Canada, Brazil, Netherlands, South Korea, Thailand, Mexico
 
 ---
 
@@ -31,7 +31,7 @@ Japan, Singapore, UK, USA, Germany, France, India
 ```
 ┌──────────────────┐     ┌───────────────────┐     ┌──────────────────────┐
 │ 01_scrape_data   │────▶│ 03_sentiment      │────▶│ 05_cross_analysis    │
-│ (Reddit + images)│     │ _analysis.py      │     │                      │
+│ (Multi-source    │     │ _analysis.py      │     │                      │
 └──────────────────┘     │ (RoBERTa NLP)     │     │ Correlate VLM ×      │
          │               └───────────────────┘     │ sentiment → weights   │
          │                        │                │ + design requirements │
@@ -94,7 +94,7 @@ Every requirement row includes: `id`, `category`, `requirement text`,
 
 | Script | Purpose | Input | Output |
 |--------|---------|-------|--------|
-| `01_scrape_data.py` | Collect text corpus + images (DuckDuckGo, Wikimedia) | — | `/data/text_raw.csv`, `/data/images/*/` |
+| `01_scrape_data.py` | Collect text corpus + images (DDG, Reddit, Mastodon, Pinterest, YouTube, Wikimedia, Openverse) | — | `/data/text_raw.csv`, `/data/images/*/` |
 | `03_sentiment_analysis.py` | RoBERTa sentiment scoring + keyword analysis | `text_raw.csv` | `text_with_sentiment.csv`, `sentiment_summary.csv`, 5 charts |
 | `04_image_processing.py` | VLM visual feature extraction (13 AI attributes) | `/data/images/*/` | `image_analysis.csv`, VLM cache |
 | `05_cross_analysis.py` | Correlate visuals × sentiment → model + requirements | `text_with_sentiment.csv` + `image_analysis.csv` | `design_weights.json`, `design_requirements.csv`, `vocab_visual_correlation.json`, 9 figures |
@@ -114,9 +114,10 @@ pip install -r requirements.txt
 
 | Service | Where to get | Free tier | Required for |
 |---------|-------------|-----------|--------------|
-| Reddit | reddit.com/prefs/apps → "script" | Yes | Stage 1 (text scraping) |
-| Flickr | flickr.com/services/apps/create | Yes | Stage 1 (image scraping) |
 | OpenRouter | openrouter.ai | Yes (free models) | Stage 3 (VLM image analysis) |
+| YouTube | Google Cloud Console | Yes (quota) | Stage 1 (optional, video text) |
+| Mastodon | *No key needed* (public API) | Free | Stage 1 (text + images) |
+| Pinterest | *No key needed* (internal API) | Free | Stage 1 (text + images) |
 
 All keys go into Zeabur environment variables — never hardcode them.
 
@@ -159,7 +160,7 @@ gettingaids2/
 ├── DEPLOYMENT_PLAN.txt
 ├── readme.txt                ← This file
 │
-├── 01_scrape_data.py         ← Stage 1: Reddit + image scraping
+├── 01_scrape_data.py         ← Stage 1: Multi-source scraping (DDG, Reddit, Mastodon, Pinterest, YouTube, Wikimedia, Openverse)
 ├── 03_sentiment_analysis.py  ← Stage 2: RoBERTa sentiment + keyword analysis
 ├── 04_image_processing.py    ← Stage 3: VLM + LLM visual feature extraction
 ├── 05_cross_analysis.py      ← Stage 4: Correlation model + design requirements
