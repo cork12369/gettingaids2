@@ -15,12 +15,14 @@ Outputs:
 """
 
 import os
+import json
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from datetime import datetime
 from pathlib import Path
+from scipy.stats import pearsonr
 
 # Paths
 TEXT_CSV        = Path("/data/text_with_sentiment.csv")
@@ -615,6 +617,345 @@ def plot_correlation_heatmap(weights_data: dict, output_dir: Path):
     print(f"  ✓ Saved: correlation_heatmap.png")
 
 
+# ── Vocabulary–Visual Cross-Correlation ───────────────────────────────────────
+
+# Design vocabulary categories from text analytics (03_sentiment_analysis.py)
+DESIGN_VOCAB = {
+    "aesthetic":  ["beautiful", "art", "gorgeous", "stunning", "lovely", "pretty",
+                   "artistic", "elegant", "intricate", "detailed"],
+    "functional": ["safe", "functional", "practical", "sturdy", "durable",
+                   "slippery", "dangerous", "hazard", "trip", "broken"],
+    "cultural":   ["culture", "tradition", "local", "pride", "identity",
+                   "community", "landmark", "heritage", "unique", "symbol"],
+    "negative":   ["ugly", "boring", "dull", "plain", "generic", "eyesore",
+                   "dirty", "rusted", "neglected", "terrible"],
+    "engagement": ["collect", "photograph", "hunt", "find", "discover", "tourist",
+                   "attraction", "visit", "seek", "card"],
+}
+
+
+def _vocab_frequency_by_country(text_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute normalised design-vocabulary frequency per country."""
+    records = []
+    for country, group in text_df.groupby("country"):
+        text_blob = " ".join(group["text"].fillna("").str.lower())
+        row = {"country": country}
+        for category, words in DESIGN_VOCAB.items():
+            row[category] = sum(text_blob.count(w) for w in words)
+        records.append(row)
+    kw_df = pd.DataFrame(records).set_index("country")
+    # Row-normalise so countries with more text don't dominate
+    row_sums = kw_df.sum(axis=1).replace(0, 1)
+    return kw_df.div(row_sums, axis=0)
+
+
+def compute_vocab_visual_correlation(text_df: pd.DataFrame,
+                                      img_df: pd.DataFrame) -> dict:
+    """Cross-correlate DESIGN_VOCAB categories with VLM visual attributes.
+
+    Produces:
+      - correlation_matrix: Pearson r for each (vocab_category, visual_attribute) pair
+      - p_values: statistical significance of each pair
+      - significant_pairs: pairs where p < 0.05
+      - hypothesis_tests: targeted tests for specific style→vocab hypotheses
+    """
+    print("\n=== Computing Vocabulary × Visual Attribute Correlation ===")
+
+    # ── 1. Vocab frequency per country (normalised) ─────────────────────────
+    vocab_df = _vocab_frequency_by_country(text_df)
+    print(f"  Vocab profiles: {len(vocab_df)} countries")
+
+    # ── 2. Encode and aggregate visual attributes by country ────────────────
+    img_encoded = _encode_image_attributes(img_df)
+
+    # Filter to manhole covers
+    if "is_manhole_cover" in img_encoded.columns:
+        img_encoded = img_encoded[
+            img_encoded["is_manhole_cover"].apply(
+                lambda x: str(x).lower() in ("true", "yes", "1")
+            )
+        ]
+
+    num_cols = [c for c in img_encoded.columns if c.endswith("_num")]
+    visual_by_country = (
+        img_encoded.groupby("country")[num_cols]
+        .mean()
+        .rename(columns={c: c.replace("_num", "") for c in num_cols})
+    )
+
+    # Also aggregate dominant_style mode per country
+    if "dominant_style" in img_encoded.columns:
+        style_mode = (
+            img_encoded.groupby("country")["dominant_style"]
+            .agg(lambda x: x.value_counts().index[0] if len(x) > 0 else "unknown")
+            .rename("dominant_style")
+        )
+        visual_by_country = visual_by_country.join(style_mode, how="left")
+
+    # Also get mean ornamentation_level by country for hypothesis testing
+    if "ornamentation_level" in img_encoded.columns:
+        orn_mean = (
+            img_encoded.groupby("country")["ornamentation_num"]
+            .mean()
+            .rename("ornamentation_mean")
+        )
+        visual_by_country = visual_by_country.join(orn_mean, how="left")
+
+    print(f"  Visual profiles: {len(visual_by_country)} countries")
+
+    # ── 3. Merge on country ─────────────────────────────────────────────────
+    merged = vocab_df.join(visual_by_country, how="inner")
+
+    # Drop non-numeric columns for correlation
+    numeric_cols = [c for c in merged.columns if merged[c].dtype in (np.float64, np.int64, float, int)]
+
+    if len(merged) < 3:
+        print("  ⚠ Fewer than 3 countries with both vocab & visual data — "
+              "correlations unreliable. Reporting raw data only.")
+        return {
+            "correlation_matrix": {},
+            "p_values": {},
+            "significant_pairs": [],
+            "hypothesis_tests": {},
+            "n_countries": len(merged),
+            "countries": sorted(merged.index.tolist()),
+        }
+
+    print(f"  Correlating across {len(merged)} countries: "
+          f"{sorted(merged.index.tolist())}")
+
+    # ── 4. Pearson correlation matrix: vocab × visual ───────────────────────
+    vocab_categories = list(DESIGN_VOCAB.keys())
+    visual_attributes = [a for a in DESIGN_ATTRIBUTES if a in numeric_cols]
+
+    correlation_matrix = {}
+    p_values = {}
+    significant_pairs = []
+
+    for vcat in vocab_categories:
+        correlation_matrix[vcat] = {}
+        p_values[vcat] = {}
+        for vattr in visual_attributes:
+            if vcat in merged.columns and vattr in merged.columns:
+                x = merged[vcat].values
+                y = merged[vattr].values
+                if len(x) >= 3 and np.std(x) > 0 and np.std(y) > 0:
+                    r, p = pearsonr(x, y)
+                    correlation_matrix[vcat][vattr] = round(r, 4)
+                    p_values[vcat][vattr] = round(p, 6)
+                    if p < 0.05:
+                        stars = "**" if p < 0.01 else "*"
+                        significant_pairs.append({
+                            "vocab": vcat,
+                            "visual": vattr,
+                            "r": round(r, 4),
+                            "p": round(p, 6),
+                            "stars": stars,
+                        })
+                else:
+                    correlation_matrix[vcat][vattr] = 0.0
+                    p_values[vcat][vattr] = 1.0
+            else:
+                correlation_matrix[vcat][vattr] = 0.0
+                p_values[vcat][vattr] = 1.0
+
+    # ── 5. Print correlation matrix ─────────────────────────────────────────
+    print("\n  ── Vocabulary × Visual Correlation Matrix ──")
+    header = f"  {'':20s}" + "".join(f"{a:>18s}" for a in visual_attributes)
+    print(header)
+    for vcat in vocab_categories:
+        row_str = f"  {vcat:20s}"
+        for vattr in visual_attributes:
+            r = correlation_matrix[vcat].get(vattr, 0.0)
+            p = p_values[vcat].get(vattr, 1.0)
+            stars = "**" if p < 0.01 else "*" if p < 0.05 else ""
+            row_str += f"  {r:+.3f}{stars:>4s}"
+        print(row_str)
+
+    if significant_pairs:
+        print(f"\n  Significant pairs (p < 0.05): {len(significant_pairs)}")
+        for sp in significant_pairs:
+            print(f"    {sp['vocab']:12s} ↔ {sp['visual']:25s}  "
+                  f"r={sp['r']:+.4f}  p={sp['p']:.4f} {sp['stars']}")
+    else:
+        print("\n  No significant pairs at p < 0.05 level")
+
+    # ── 6. Hypothesis tests ─────────────────────────────────────────────────
+    hypothesis_tests = {}
+
+    # Hypothesis 1: "industrial" countries → higher "functional" vocab
+    if "dominant_style" in merged.columns:
+        industrial_countries = merged[
+            merged["dominant_style"] == "industrial"
+        ].index.tolist()
+        other_countries = merged[
+            merged["dominant_style"] != "industrial"
+        ].index.tolist()
+
+        if industrial_countries and other_countries:
+            ind_func = merged.loc[industrial_countries, "functional"].mean()
+            oth_func = merged.loc[other_countries, "functional"].mean()
+            hypothesis_tests["industrial_functional"] = {
+                "hypothesis": "Countries with 'industrial' dominant style "
+                              "use more 'functional' vocabulary",
+                "countries": industrial_countries,
+                "mean_functional_score": round(ind_func, 4),
+                "mean_functional_other": round(oth_func, 4),
+                "difference": round(ind_func - oth_func, 4),
+                "supports_hypothesis": ind_func > oth_func,
+            }
+            print(f"\n  ── Hypothesis: Industrial style → Functional vocab ──")
+            print(f"    Industrial countries: {industrial_countries}")
+            print(f"    Functional vocab (industrial): {ind_func:.4f}")
+            print(f"    Functional vocab (others):     {oth_func:.4f}")
+            print(f"    Supports hypothesis: {'YES' if ind_func > oth_func else 'NO'}")
+
+    # Hypothesis 2: "highly_ornate" countries → higher "engagement" vocab
+    if "ornamentation_mean" in merged.columns:
+        # Top quartile ornamentation = "highly ornate" countries
+        orn_threshold = merged["ornamentation_mean"].quantile(0.75)
+        ornate_countries = merged[
+            merged["ornamentation_mean"] >= orn_threshold
+        ].index.tolist()
+        plain_countries = merged[
+            merged["ornamentation_mean"] < orn_threshold
+        ].index.tolist()
+
+        if ornate_countries and plain_countries:
+            orn_engage = merged.loc[ornate_countries, "engagement"].mean()
+            pln_engage = merged.loc[plain_countries, "engagement"].mean()
+            hypothesis_tests["ornate_engagement"] = {
+                "hypothesis": "Countries with higher ornamentation "
+                              "use more 'engagement' vocabulary",
+                "countries": ornate_countries,
+                "ornamentation_threshold": round(orn_threshold, 4),
+                "mean_engagement_score": round(orn_engage, 4),
+                "mean_engagement_other": round(pln_engage, 4),
+                "difference": round(orn_engage - pln_engage, 4),
+                "supports_hypothesis": orn_engage > pln_engage,
+            }
+            print(f"\n  ── Hypothesis: Highly ornate → Engagement vocab ──")
+            print(f"    Ornate countries (top quartile): {ornate_countries}")
+            print(f"    Engagement vocab (ornate):  {orn_engage:.4f}")
+            print(f"    Engagement vocab (others):  {pln_engage:.4f}")
+            print(f"    Supports hypothesis: {'YES' if orn_engage > pln_engage else 'NO'}")
+
+    # Hypothesis 3: "aesthetic" vocab correlates with "aesthetic_appeal" visual
+    if "aesthetic" in merged.columns and "aesthetic_appeal" in merged.columns:
+        r_ae, p_ae = pearsonr(merged["aesthetic"].values,
+                               merged["aesthetic_appeal"].values)
+        hypothesis_tests["aesthetic_vocab_aesthetic_visual"] = {
+            "hypothesis": "Countries with more 'aesthetic' vocabulary "
+                          "also have higher VLM aesthetic_appeal scores",
+            "r": round(r_ae, 4),
+            "p": round(p_ae, 6),
+            "significant": p_ae < 0.05,
+            "supports_hypothesis": r_ae > 0,
+        }
+        print(f"\n  ── Hypothesis: Aesthetic vocab ↔ Aesthetic visual ──")
+        print(f"    r = {r_ae:+.4f}, p = {p_ae:.4f}")
+        print(f"    Supports hypothesis: {'YES' if r_ae > 0 else 'NO'}")
+
+    # ── 7. Build and save result ────────────────────────────────────────────
+    result = {
+        "correlation_matrix": correlation_matrix,
+        "p_values": p_values,
+        "significant_pairs": significant_pairs,
+        "hypothesis_tests": hypothesis_tests,
+        "n_countries": len(merged),
+        "countries": sorted(merged.index.tolist()),
+        "vocab_categories": vocab_categories,
+        "visual_attributes": visual_attributes,
+        "method": "pearson_correlation_vocab_visual",
+        "generated_at": datetime.now().isoformat(),
+    }
+
+    vocab_json_path = OUTPUT_DIR / "vocab_visual_correlation.json"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    vocab_json_path.write_text(json.dumps(result, indent=2))
+    print(f"\n  ✓ Saved vocab-visual correlation → {vocab_json_path}")
+
+    return result
+
+
+def plot_vocab_visual_heatmap(corr_data: dict, output_dir: Path):
+    """Figure 9: Vocabulary × Visual Attribute Correlation Heatmap.
+
+    Rows = vocab categories, columns = visual attributes.
+    Cells show Pearson r with significance stars.
+    """
+    corr_matrix = corr_data.get("correlation_matrix", {})
+    p_val_matrix = corr_data.get("p_values", {})
+    vocab_cats = corr_data.get("vocab_categories", list(DESIGN_VOCAB.keys()))
+    visual_attrs = corr_data.get("visual_attributes", DESIGN_ATTRIBUTES)
+
+    if not corr_matrix:
+        print("  ⚠ No vocab-visual correlation data — skipping heatmap")
+        return
+
+    # Build DataFrames
+    r_df = pd.DataFrame(corr_matrix).T
+    r_df = r_df.reindex(index=vocab_cats, columns=visual_attrs)
+
+    p_df = pd.DataFrame(p_val_matrix).T
+    p_df = p_df.reindex(index=vocab_cats, columns=visual_attrs)
+
+    # Build annotation strings: r value + significance stars
+    annot = r_df.copy().astype(str)
+    for row in annot.index:
+        for col in annot.columns:
+            r_val = r_df.loc[row, col]
+            p_val = p_df.loc[row, col]
+            try:
+                r_f = float(r_val)
+                p_f = float(p_val)
+            except (ValueError, TypeError):
+                annot.loc[row, col] = ""
+                continue
+            stars = "**" if p_f < 0.01 else "*" if p_f < 0.05 else ""
+            annot.loc[row, col] = f"{r_f:+.2f}{stars}"
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    # Convert to float for colormap
+    heat_data = r_df.astype(float)
+
+    sns.heatmap(
+        heat_data,
+        annot=annot,
+        fmt="",
+        cmap="RdBu_r",
+        center=0,
+        vmin=-1,
+        vmax=1,
+        linewidths=0.8,
+        linecolor="white",
+        ax=ax,
+        cbar_kws={"label": "Pearson r"},
+    )
+
+    ax.set_title(
+        "Figure 9: Text Vocabulary × Visual Attribute Correlation\n"
+        "(Pearson r by country, * p<0.05, ** p<0.01)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax.set_xlabel("VLM Visual Attribute", fontsize=11)
+    ax.set_ylabel("Text Vocabulary Category", fontsize=11)
+
+    # Rotate x labels for readability
+    ax.set_xticklabels(
+        [l.get_text().replace("_", " ").title() for l in ax.get_xticklabels()],
+        rotation=30,
+        ha="right",
+    )
+
+    plt.tight_layout()
+    plt.savefig(output_dir / "vocab_visual_heatmap.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  ✓ Saved: vocab_visual_heatmap.png")
+
+
 # ── Main Analysis Function ─────────────────────────────────────────────────────
 
 def cross_analyze():
@@ -759,6 +1100,12 @@ def cross_analyze():
         # Figure 8: correlation model heatmap (requires design weights)
         if weights_data is not None:
             plot_correlation_heatmap(weights_data, CROSS_DIR)
+
+        # Vocabulary × Visual attribute correlation
+        vocab_corr = None
+        if len(text_df) > 0 and len(img_df) > 0:
+            vocab_corr = compute_vocab_visual_correlation(text_df, img_df)
+            plot_vocab_visual_heatmap(vocab_corr, CROSS_DIR)
     else:
         print("  ⚠ Insufficient data for visualizations")
     
@@ -774,8 +1121,10 @@ def cross_analyze():
     print("  • Figure 6: sentiment_heatmap.png")
     print("  • Figure 7: human_ai_agreement.png (when human grades exist)")
     print("  • Figure 8: correlation_heatmap.png (design-weight model)")
+    print("  • Figure 9: vocab_visual_heatmap.png (text × visual correlation)")
     if weights_data is not None:
         print(f"\n  Design weights model saved to: {WEIGHTS_JSON}")
+        print(f"  Vocab-visual correlation saved to: {OUTPUT_DIR / 'vocab_visual_correlation.json'}")
     print(f"\nAll outputs saved to: {OUTPUT_DIR}")
 
 
