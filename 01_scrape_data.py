@@ -21,6 +21,19 @@ import logging
 import argparse
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+======= REPLACE
+</parameter>
+<task_progress>
+- [x] Optimize requirements.txt for CPU-only torch
+- [ ] Add lazy imports to reduce startup time
+- [x] Parallelize scraper country processing
+- [ ] Parallelize image downloads
+- [ ] Batch VLM/LLM API calls
+- [ ] Add CSV caching to Flask app
+</task_progress>
+</invoke>
 
 # ── Logging Setup ───────────────────────────────────────────────────────────────────────
 LOG_DIR = Path("logs")
@@ -1410,7 +1423,127 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
     return successful
 
 
+def _download_single(item: dict) -> dict | None:
+    """Download a single image. Returns item with local_path on success, None on failure."""
+    url = item.get("url", "")
+    if not url:
+        return None
+    country_dir = IMG_DIR / item["country"]
+    country_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = url.split("/")[-1][:40].replace("%", "_").replace(" ", "_")
+    filename = f"{item['source']}_{safe_id}.jpg"
+    filepath = country_dir / filename
+    if filepath.exists():
+        item["local_path"] = str(filepath)
+        return item
+    resp = safe_get(url, timeout=DOWNLOAD_TIMEOUT)
+    if not resp:
+        return None
+    try:
+        img = Image.open(BytesIO(resp.content)).convert("RGB")
+        if min(img.size) < MIN_IMG_SIZE:
+            return None
+        img.save(filepath, "JPEG", quality=90)
+        item["local_path"] = str(filepath)
+        item["width"]  = img.size[0]
+        item["height"] = img.size[1]
+        return item
+    except Exception:
+        return None
+
+
+def download_images_parallel(metadata_list: list[dict], max_workers: int = 6) -> list[dict]:
+    """Download images in parallel using ThreadPoolExecutor."""
+    seen_urls = set()
+    unique_items = []
+    for item in metadata_list:
+        url = item.get("url", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            unique_items.append(item)
+
+    total = len(unique_items)
+    logger.info(f"Parallel download: {total} unique images, {max_workers} workers")
+    successful = []
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_download_single, item): item for item in unique_items}
+        for fut in as_completed(futures):
+            completed += 1
+            result = fut.result()
+            if result and result.get("local_path"):
+                successful.append(result)
+            if completed % 20 == 0 or completed == total:
+                logger.info(f"  Downloaded: {len(successful)}/{completed} completed")
+
+    logger.info(f"Parallel download complete: {len(successful)}/{total} images saved")
+    return successful
+</parameter>
+<task_progress>
+- [x] Optimize requirements.txt for CPU-only torch
+- [ ] Add lazy imports to reduce startup time
+- [x] Parallelize scraper country processing
+- [x] Parallelize image downloads
+- [ ] Batch VLM/LLM API calls
+- [ ] Add CSV caching to Flask app
+</task_progress>
+</invoke>
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────────────
+
+# ── Parallel country processing helpers ─────────────────────────────────────────────────
+
+def _scrape_text_for_country(country: str) -> list[dict]:
+    """Scrape all text sources for a single country. Used by parallel executor."""
+    results = []
+    queries = TEXT_QUERIES.get(country, [])
+    if queries:
+        results.extend(scrape_ddg_text(country, queries))
+    return results
+
+
+def _scrape_social_for_country(country: str) -> tuple[list[dict], list[dict]]:
+    """Scrape Reddit + Mastodon + Pinterest for a single country in one pass."""
+    text_results, image_results = [], []
+    # Reddit
+    queries = REDDIT_QUERIES.get(country, [])
+    if queries:
+        rd_text, rd_imgs = scrape_reddit(country, queries)
+        text_results.extend(rd_text)
+        image_results.extend(rd_imgs)
+    # Mastodon
+    queries = MASTODON_QUERIES.get(country, [])
+    if queries:
+        md_text, md_imgs = scrape_mastodon(country, queries)
+        text_results.extend(md_text)
+        image_results.extend(md_imgs)
+    # Pinterest
+    queries = PINTEREST_QUERIES.get(country, [])
+    if queries:
+        pin_text, pin_imgs = scrape_pinterest(country, queries)
+        text_results.extend(pin_text)
+        image_results.extend(pin_imgs)
+    return text_results, image_results
+
+
+def _scrape_images_for_country(country: str) -> list[dict]:
+    """Scrape all image sources for a single country."""
+    results = []
+    # DDG images
+    queries = IMG_QUERIES.get(country, [])
+    if queries:
+        results.extend(scrape_ddg_images(country, queries))
+    # Wikimedia
+    if country in WIKIMEDIA_CATEGORIES:
+        results.extend(scrape_wikimedia(country, WIKIMEDIA_CATEGORIES[country]))
+    # Openverse
+    queries = OPENVERSE_QUERIES.get(country, [])
+    if queries:
+        results.extend(scrape_openverse(country, queries))
+    return results
+
 
 def run():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1419,13 +1552,21 @@ def run():
     all_text   = []
     all_images = []
 
-    # ── Text scraping ──────────────────────────────────────────────────────────
-    logger.info("=== TEXT SCRAPING ===")
-    for country, queries in TEXT_QUERIES.items():
-        logger.info(f"[{country.upper()}]")
-        items = scrape_ddg_text(country, queries)
-        all_text.extend(items)
-        logger.info(f"  → {len(items)} text records")
+    countries = list(TEXT_QUERIES.keys())
+    max_workers = min(6, len(countries))  # cap parallelism
+
+    # ── Text scraping (parallel) ─────────────────────────────────────────────────
+    logger.info(f"=== TEXT SCRAPING ({max_workers} workers) ===")
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_scrape_text_for_country, c): c for c in countries}
+        for fut in as_completed(futures):
+            c = futures[fut]
+            try:
+                items = fut.result()
+                all_text.extend(items)
+                logger.info(f"  [{c.upper()}] {len(items)} text records")
+            except Exception as e:
+                logger.error(f"  [{c.upper()}] failed: {e}")
 
     # ── YouTube scraping ───────────────────────────────────────────────────────
     if YOUTUBE_API_KEY:
@@ -1439,32 +1580,19 @@ def run():
     else:
         logger.info("=== YOUTUBE: skipped (no YOUTUBE_API_KEY) ===")
 
-    # ── Reddit scraping (free, no auth) ────────────────────────────────────────
-    logger.info("=== REDDIT SCRAPING ===")
-    for country, queries in REDDIT_QUERIES.items():
-        logger.info(f"[{country.upper()}] Reddit")
-        rd_text, rd_images = scrape_reddit(country, queries)
-        all_text.extend(rd_text)
-        all_images.extend(rd_images)
-        logger.info(f"  → {len(rd_text)} text, {len(rd_images)} images")
-
-    # ── Mastodon scraping (public API, no auth) ───────────────────────────────
-    logger.info("=== MASTODON SCRAPING ===")
-    for country, queries in MASTODON_QUERIES.items():
-        logger.info(f"[{country.upper()}] Mastodon")
-        md_text, md_images = scrape_mastodon(country, queries)
-        all_text.extend(md_text)
-        all_images.extend(md_images)
-        logger.info(f"  → {len(md_text)} text, {len(md_images)} images")
-
-    # ── Pinterest scraping ─────────────────────────────────────────────────────
-    logger.info("=== PINTEREST SCRAPING ===")
-    for country, queries in PINTEREST_QUERIES.items():
-        logger.info(f"[{country.upper()}] Pinterest")
-        pin_text, pin_images = scrape_pinterest(country, queries)
-        all_text.extend(pin_text)
-        all_images.extend(pin_images)
-        logger.info(f"  → {len(pin_text)} text, {len(pin_images)} images")
+    # ── Social scraping (Reddit + Mastodon + Pinterest) in parallel ─────────────
+    logger.info(f"=== SOCIAL SCRAPING ({max_workers} workers) ===")
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_scrape_social_for_country, c): c for c in countries}
+        for fut in as_completed(futures):
+            c = futures[fut]
+            try:
+                rd_text, rd_imgs = fut.result()
+                all_text.extend(rd_text)
+                all_images.extend(rd_imgs)
+                logger.info(f"  [{c.upper()}] {len(rd_text)} text, {len(rd_imgs)} images")
+            except Exception as e:
+                logger.error(f"  [{c.upper()}] social scrape failed: {e}")
 
     # Balance text records
     logger.info("=== BALANCING TEXT RECORDS ===")
@@ -1483,38 +1611,26 @@ def run():
     logger.info(country_counts.to_string())
     logger.info(f"Countries with ≥{MIN_TEXT_PER_COUNTRY} records: {(country_counts >= MIN_TEXT_PER_COUNTRY).sum()}")
 
-    # ── Image scraping ─────────────────────────────────────────────────────────
-    logger.info("=== IMAGE SCRAPING ===")
-
-    # DDG images
-    for country, queries in IMG_QUERIES.items():
-        logger.info(f"[{country.upper()}] DDG")
-        items = scrape_ddg_images(country, queries)
-        all_images.extend(items)
-        logger.info(f"  → {len(items)} image URLs")
-
-    # Wikimedia (higher quality, keep separate)
-    logger.info("[WIKIMEDIA]")
-    for country, category in WIKIMEDIA_CATEGORIES.items():
-        items = scrape_wikimedia(country, category)
-        all_images.extend(items)
-        logger.info(f"  → {len(items)} Wikimedia images for {country}")
-
-    # Openverse (free, no key needed)
-    logger.info("=== OPENVERSE SCRAPING ===")
-    for country, queries in OPENVERSE_QUERIES.items():
-        logger.info(f"[{country.upper()}] Openverse")
-        items = scrape_openverse(country, queries)
-        all_images.extend(items)
-        logger.info(f"  → {len(items)} Openverse images")
+    # ── Image scraping (parallel) ─────────────────────────────────────────────────
+    logger.info(f"=== IMAGE SCRAPING ({max_workers} workers) ===")
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_scrape_images_for_country, c): c for c in countries}
+        for fut in as_completed(futures):
+            c = futures[fut]
+            try:
+                items = fut.result()
+                all_images.extend(items)
+                logger.info(f"  [{c.upper()}] {len(items)} image URLs")
+            except Exception as e:
+                logger.error(f"  [{c.upper()}] image scrape failed: {e}")
 
     # Balance image candidates (with fallback sources)
     logger.info("=== BALANCING IMAGE CANDIDATES ===")
     all_images = balance_image_candidates(all_images)
 
-    # Download
-    logger.info(f"Downloading {len(all_images)} balanced images...")
-    downloaded = download_images(all_images)
+    # ── Parallel image downloads ──────────────────────────────────────────────────
+    logger.info(f"Downloading {len(all_images)} images ({max_workers} download workers)...")
+    downloaded = download_images_parallel(all_images, max_workers=max_workers)
 
     img_df = pd.DataFrame(downloaded)
     img_df.to_csv(IMG_META_CSV, index=False)

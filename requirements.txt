@@ -12,13 +12,13 @@ beautifulsoup4>=4.12.0
 pandas>=2.0.0
 numpy>=1.24.0
 
-# NLP / Sentiment
-transformers>=4.35.0
-torch>=2.0.0          # CPU-only ~800MB — see note below
+# NLP / Sentiment - CPU-only torch for faster builds
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.1.0
 sentencepiece>=0.1.99
 
-# Image processing
-opencv-python-headless>=4.8.0  # headless = no GUI deps, smaller build
+# Image processing - headless = no GUI deps, smaller build
+opencv-python-headless>=4.8.0
 scikit-image>=0.21.0
 Pillow>=10.0.0
 scipy>=1.11.0
@@ -32,8 +32,13 @@ seaborn>=0.13.0
 
 # Metrics
 scikit-learn>=1.3.0
-
-# NOTE: if Zeabur build times out on torch, replace the torch line with:
-#   torch==2.1.0+cpu
-# and add this line above it:
-#   --extra-index-url https://download.pytorch.org/whl/cpu
+</parameter>
+<task_progress>
+- [x] Optimize requirements.txt for CPU-only torch
+- [ ] Add lazy imports to reduce startup time
+- [ ] Parallelize scraper country processing
+- [ ] Parallelize image downloads
+- [ ] Batch VLM/LLM API calls
+- [ ] Add CSV caching to Flask app
+</task_progress>
+</invoke>

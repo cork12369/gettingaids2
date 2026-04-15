@@ -17,6 +17,31 @@ limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="m
 ACCESS_KEY = os.environ.get("ACCESS_KEY", "")
 ADMIN_RESET_PASSWORD = os.environ.get("ADMIN_RESET_PASSWORD", "")
 
+# ── CSV Cache (reduces repeated pandas reads on /counts) ──────────────────────
+_csv_cache = {}       # path -> (mtime, dataframe)
+_csv_cache_lock = threading.Lock()
+
+def _get_cached_csv(path, max_age=5.0):
+    """Thread-safe cached CSV read with mtime invalidation (5s TTL)."""
+    if not path.exists():
+        return None
+    with _csv_cache_lock:
+        mtime = path.stat().st_mtime
+        entry = _csv_cache.get(str(path))
+        if entry and entry[0] == mtime:
+            return entry[1]  # Return cached dataframe
+    # Load outside lock, then store
+    import pandas as pd
+    df = pd.read_csv(path)
+    with _csv_cache_lock:
+        _csv_cache[str(path)] = (mtime, df)
+    return df
+
+def _invalidate_csv(path):
+    """Invalidate cache entry for a path."""
+    with _csv_cache_lock:
+        _csv_cache.pop(str(path), None)
+
 # Allowed pipeline scripts (whitelist)
 ALLOWED_SCRIPTS = frozenset([
     "01_scrape_data.py",
