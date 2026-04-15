@@ -147,14 +147,18 @@ def _claim_chunk(grader_id):
     graded_ids = {g["snippet_id"] for g in grades if g["grader_id"] == grader_id}
     total = _total_chunks()
 
-    # Check existing assignment
+    # Check existing assignments for this grader
     for a in assignments:
         if a["grader_id"] == grader_id:
-            # Already assigned — check if completed
-            graded_in_chunk = len(graded_ids)
-            if graded_in_chunk < CHUNK_SIZE:
-                return int(a["chunk_index"])
-            # else completed, will try to claim new below
+            ci = int(a["chunk_index"])
+            start = ci * CHUNK_SIZE
+            end = min(start + CHUNK_SIZE, SAMPLE_TARGET)
+            # Count grades specifically in this chunk's snippet range
+            chunk_snippet_ids = {str(i) for i in range(start, end)}
+            graded_in_this_chunk = len(graded_ids & chunk_snippet_ids)
+            if graded_in_this_chunk < (end - start):
+                return ci
+            # Chunk completed, continue to find a new unclaimed chunk
 
     # Find next unclaimed chunk
     claimed = {int(a["chunk_index"]) for a in assignments}
@@ -514,12 +518,17 @@ a{color:#58a6ff;text-decoration:none}</style></head><body>
 <p class="info"><a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/grade/team">Team Progress →</a></p>
 <script>
 var snippets=[],idx=0,chunkIdx=-1;
+var FETCH_TIMEOUT=20000;
 document.addEventListener('keydown',function(e){if(e.key==='0')grade(0);else if(e.key==='1')grade(1);else if(e.key==='2')grade(2);});
-function load(){fetch('/grade/api/start').then(r=>r.json()).then(d=>{
-if(d.error){document.getElementById('no-data').style.display='block';return;}
-if(d.all_claimed){document.getElementById('all-done').style.display='block';return;}
+function fetchT(url,opts){return new Promise(function(res,rej){var c=new AbortController();var t=setTimeout(function(){c.abort();},FETCH_TIMEOUT);fetch(url,Object.assign({},opts||{},{signal:c.signal})).then(function(r){clearTimeout(t);res(r);}).catch(function(e){clearTimeout(t);rej(e);});});}
+function hideAll(){['snippet-card','btns','done','no-data','all-done'].forEach(function(id){document.getElementById(id).style.display='none';});}
+function showError(msg){hideAll();document.getElementById('meta').innerHTML='<span style="color:#f85149">'+msg+'</span> <a href="/grade" style="color:#58a6ff;margin-left:8px">Retry</a>';}
+function load(){document.getElementById('meta').textContent='Loading snippets...';fetchT('/grade/api/start').then(function(r){if(!r.ok)throw new Error('Server returned '+r.status);return r.json();}).then(function(d){
+if(d.error){hideAll();document.getElementById('no-data').style.display='block';document.getElementById('meta').textContent=d.error;return;}
+if(d.all_claimed){hideAll();document.getElementById('all-done').style.display='block';document.getElementById('meta').textContent='';return;}
 chunkIdx=d.chunk_index;snippets=d.snippets;idx=d.graded_in_chunk;
-show();}).catch(()=>{document.getElementById('no-data').style.display='block';});}
+if(!snippets||snippets.length===0){showError('No snippets received.');return;}
+show();}).catch(function(e){if(e.name==='AbortError')showError('Request timed out. Server may be busy generating sample data.');else showError('Failed to load: '+e.message);});}
 function show(){if(idx>=snippets.length){document.getElementById('snippet-card').style.display='none';
 document.getElementById('btns').style.display='none';document.getElementById('done').style.display='block';return;}
 var s=snippets[idx];document.getElementById('country').textContent=s.country||'?';
