@@ -18,13 +18,48 @@ from duckduckgo_search import DDGS
 from collections import defaultdict
 import functools
 import logging
+import argparse
+from logging.handlers import RotatingFileHandler
+from datetime import datetime
 
 # ── Logging Setup ───────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+def setup_logging(debug: bool = False):
+    """Configure logging with both console and persistent file output."""
+    console_level = logging.DEBUG if debug else logging.INFO
+    file_level = logging.DEBUG  # File always gets DEBUG for persistent diagnostics
+
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
+
+    # Root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    # Remove existing handlers (avoid duplicates on re-run)
+    root_logger.handlers.clear()
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    root_logger.addHandler(console_handler)
+
+    # File handler — timestamped, rotating (10MB max, keep 5 backups)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_file = LOG_DIR / f"scraper_{timestamp}.log"
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setLevel(file_level)
+    file_handler.setFormatter(logging.Formatter(log_format, date_format))
+    root_logger.addHandler(file_handler)
+
+    return logging.getLogger(__name__)
+
+# Logger will be properly configured after parse_args; use a placeholder for module-level code
 logger = logging.getLogger(__name__)
 
 
@@ -76,10 +111,10 @@ MAX_IMG_PER_COUNTRY  = 100  # cap to prevent over-representation
 # This is the target we try to hit for all countries
 TARGET_IMG_PER_COUNTRY = 50  # ideal number of images per country
 
-# Timeout config (seconds)
-REQUEST_TIMEOUT = 15
-DOWNLOAD_TIMEOUT = 20
-CONNECT_TIMEOUT = 10
+# Timeout config (seconds) — increased from 15/20/10 for reliability
+REQUEST_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 45
+CONNECT_TIMEOUT = 20
 
 # Countries × search angles
 # Text queries cast wide: reviews, opinions, travel blog language
@@ -264,42 +299,58 @@ COUNTRY_KEYWORDS = {
 def safe_get(url: str, timeout: int = REQUEST_TIMEOUT) -> requests.Response | None:
     """Make HTTP GET request with retry and timeout handling."""
     headers = {"User-Agent": "Mozilla/5.0 (compatible; research-scraper/1.0)"}
+    start = time.time()
     try:
+        logger.debug(f"GET {url[:120]} (timeout={timeout}s)")
         resp = requests.get(url, timeout=timeout, headers=headers)
+        elapsed = time.time() - start
+        logger.debug(f"GET {url[:80]} → {resp.status_code} in {elapsed:.1f}s ({len(resp.content)} bytes)")
         resp.raise_for_status()
         return resp
     except requests.exceptions.Timeout as e:
-        logger.error(f"Timeout ({timeout}s) for {url[:60]}")
+        elapsed = time.time() - start
+        logger.error(f"Timeout ({timeout}s, waited {elapsed:.1f}s) for {url[:80]}")
         return None
     except requests.exceptions.ConnectionError as e:
-        logger.error(f"Connection error for {url[:60]}: {e}")
+        logger.error(f"Connection error for {url[:80]}: {e}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP {resp.status_code} for {url[:80]}")
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Request failed for {url[:60]}: {e}")
+        logger.error(f"Request failed for {url[:80]}: {e}")
         return None
     except Exception as e:
-        logger.error(f"Unexpected error for {url[:60]}: {e}")
+        logger.error(f"Unexpected error for {url[:80]}: {e}")
         return None
 
 
 def safe_post(url: str, data: dict = None, timeout: int = REQUEST_TIMEOUT) -> requests.Response | None:
     """Make HTTP POST request with retry and timeout handling."""
     headers = {"User-Agent": "Mozilla/5.0 (compatible; research-scraper/1.0)"}
+    start = time.time()
     try:
+        logger.debug(f"POST {url[:120]} (timeout={timeout}s)")
         resp = requests.post(url, json=data, timeout=timeout, headers=headers)
+        elapsed = time.time() - start
+        logger.debug(f"POST {url[:80]} → {resp.status_code} in {elapsed:.1f}s ({len(resp.content)} bytes)")
         resp.raise_for_status()
         return resp
     except requests.exceptions.Timeout as e:
-        logger.error(f"Timeout ({timeout}s) for {url[:60]}")
+        elapsed = time.time() - start
+        logger.error(f"Timeout ({timeout}s, waited {elapsed:.1f}s) for {url[:80]}")
         return None
     except requests.exceptions.ConnectionError as e:
-        logger.error(f"Connection error for {url[:60]}: {e}")
+        logger.error(f"Connection error for {url[:80]}: {e}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP {resp.status_code} for {url[:80]}")
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Request failed for {url[:60]}: {e}")
+        logger.error(f"Request failed for {url[:80]}: {e}")
         return None
     except Exception as e:
-        logger.error(f"Unexpected error for {url[:60]}: {e}")
+        logger.error(f"Unexpected error for {url[:80]}: {e}")
         return None
 
 
@@ -623,11 +674,12 @@ def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
 
     with DDGS() as ddgs:
         for query in queries:
-            logger.info(f"DDG images: '{query}'")
+            logger.info(f"DDG images: '{query}' [{country}]")
             try:
                 hits = ddgs.images(query, max_results=MAX_IMG_ITEMS)
+                logger.debug(f"DDG images returned {len(hits)} hits for '{query}'")
             except Exception as e:
-                logger.error(f"DDG error: {e}")
+                logger.error(f"DDG image error for '{query}': {e}")
                 sleep()
                 continue
 
@@ -641,7 +693,10 @@ def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
                         "url":     url,
                         "title":   hit.get("title", ""),
                     })
+                else:
+                    logger.debug(f"DDG image hit missing 'image' URL: {hit.get('title','')[:50]}")
 
+            logger.info(f"  DDG images '{query}': {len(hits)} hits → {len(results)} cumulative")
             sleep()
 
     return results
@@ -661,12 +716,17 @@ def scrape_wikimedia(country: str, category: str, limit: int = 100) -> list[dict
         "format":  "json",
     }
     
-    resp = safe_get(api_url + "?" + "&".join(f"{k}={v}" for k, v in params.items()))
+    full_url = api_url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    logger.debug(f"Wikimedia API: {full_url[:120]}")
+    resp = safe_get(full_url)
     if not resp:
+        logger.warning(f"Wikimedia [{country}]: API request failed for {category}")
         return results
     
     try:
-        members = resp.json().get("query", {}).get("categorymembers", [])
+        json_data = resp.json()
+        logger.debug(f"Wikimedia API keys: {list(json_data.keys())}")
+        members = json_data.get("query", {}).get("categorymembers", [])
         logger.info(f"Wikimedia [{country}]: {len(members)} files in {category}")
         
         for m in members:
@@ -679,6 +739,8 @@ def scrape_wikimedia(country: str, category: str, limit: int = 100) -> list[dict
                     "url":     img_url,
                     "title":   m["title"],
                 })
+            else:
+                logger.debug(f"Wikimedia: could not resolve URL for {m['title'][:60]}")
             time.sleep(0.15)
     except Exception as e:
         logger.error(f"Wikimedia parse error for {country}: {e}")
@@ -850,10 +912,14 @@ def scrape_openverse(country: str, queries: list[str], per_page: int = 20) -> li
             )
             resp.raise_for_status()
             data = resp.json()
+            result_count = data.get("result_count", 0)
+            page_results = data.get("results", [])
+            logger.debug(f"Openverse '{query}': {result_count} total, {len(page_results)} in page")
 
-            for item in data.get("results", []):
+            for item in page_results:
                 img_url = item.get("url") or item.get("thumbnail", "")
                 if not img_url:
+                    logger.debug(f"Openverse: no URL for item '{item.get('title','')[:40]}'")
                     continue
                 results.append({
                     "country": country,
@@ -989,10 +1055,13 @@ def scrape_reddit(country: str, queries: list[str], limit: int = 25) -> tuple[li
                     logger.warning("Reddit rate limited, backing off...")
                     time.sleep(5)
                     continue
+                if resp.status_code != 200:
+                    logger.debug(f"Reddit r/{subreddit} returned HTTP {resp.status_code} for '{query}'")
                 resp.raise_for_status()
 
                 data = resp.json()
                 posts = data.get("data", {}).get("children", [])
+                logger.debug(f"Reddit r/{subreddit} '{query}': {len(posts)} posts returned")
 
                 for post in posts:
                     post_data = post.get("data", {})
@@ -1074,7 +1143,7 @@ def scrape_mastodon(country: str, queries: list[str], limit: int = 20) -> tuple[
                 )
 
                 if resp.status_code == 401:
-                    # Instance requires auth for search, skip
+                    logger.debug(f"Mastodon: {instance} requires auth for search, skipping")
                     continue
                 if resp.status_code == 429:
                     logger.warning(f"Mastodon rate limited on {instance}, backing off...")
@@ -1084,6 +1153,7 @@ def scrape_mastodon(country: str, queries: list[str], limit: int = 20) -> tuple[
                 resp.raise_for_status()
                 data = resp.json()
                 statuses = data.get("statuses", [])
+                logger.debug(f"Mastodon {instance} '{query}': {len(statuses)} statuses")
 
                 for status in statuses:
                     # Skip boosts (keep original content only)
@@ -1181,6 +1251,7 @@ def scrape_pinterest(country: str, queries: list[str], limit: int = 20) -> tuple
                 sleep()
                 continue
 
+            logger.debug(f"Pinterest '{query}' → HTTP {resp.status_code} ({len(resp.content)} bytes)")
             resp.raise_for_status()
             data = resp.json()
 
@@ -1197,6 +1268,10 @@ def scrape_pinterest(country: str, queries: list[str], limit: int = 20) -> tuple
                     data.get("resource_response", {})
                     .get("data", [])
                 )
+
+            logger.debug(f"Pinterest '{query}': {len(results_data)} pins found")
+            if not results_data:
+                logger.debug(f"Pinterest response keys: {list(data.keys())}")
 
             for pin in results_data:
                 if not isinstance(pin, dict):
@@ -1269,12 +1344,21 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
     """Download and validate images, save to /data/images/<country>/."""
     successful = []
     seen_urls = set()
+    stats = {"attempted": 0, "downloaded": 0, "skipped_duplicate": 0,
+             "skipped_no_url": 0, "skipped_existing": 0, "skipped_download_fail": 0,
+             "skipped_too_small": 0, "skipped_save_error": 0}
 
-    for item in metadata_list:
+    for idx, item in enumerate(metadata_list):
         url = item.get("url", "")
-        if not url or url in seen_urls:
+        if not url:
+            stats["skipped_no_url"] += 1
+            logger.debug(f"[{idx+1}/{len(metadata_list)}] SKIP: no URL (source={item.get('source')})")
+            continue
+        if url in seen_urls:
+            stats["skipped_duplicate"] += 1
             continue
         seen_urls.add(url)
+        stats["attempted"] += 1
 
         country_dir = IMG_DIR / item["country"]
         country_dir.mkdir(parents=True, exist_ok=True)
@@ -1285,18 +1369,23 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
         filepath = country_dir / filename
 
         if filepath.exists():
+            stats["skipped_existing"] += 1
             item["local_path"] = str(filepath)
             successful.append(item)
+            logger.debug(f"[{idx+1}/{len(metadata_list)}] EXISTS: {filepath.name}")
             continue
 
+        logger.debug(f"[{idx+1}/{len(metadata_list)}] DOWNLOAD: {url[:80]}")
         resp = safe_get(url, timeout=DOWNLOAD_TIMEOUT)
         if not resp:
+            stats["skipped_download_fail"] += 1
             continue
 
         try:
             img = Image.open(BytesIO(resp.content)).convert("RGB")
             if min(img.size) < MIN_IMG_SIZE:
-                logger.warning(f"Skipping thumbnail: {min(img.size)}px < {MIN_IMG_SIZE}px")
+                stats["skipped_too_small"] += 1
+                logger.warning(f"[{idx+1}] SKIP thumbnail: {min(img.size)}px < {MIN_IMG_SIZE}px from {url[:60]}")
                 continue
 
             img.save(filepath, "JPEG", quality=90)
@@ -1304,12 +1393,20 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
             item["width"]      = img.size[0]
             item["height"]     = img.size[1]
             successful.append(item)
+            stats["downloaded"] += 1
+            logger.debug(f"[{idx+1}] SAVED: {filepath.name} ({img.size[0]}x{img.size[1]})")
 
         except Exception as e:
-            logger.error(f"Image save failed: {e}")
+            stats["skipped_save_error"] += 1
+            logger.error(f"[{idx+1}] Image save failed for {url[:60]}: {e}")
 
         time.sleep(0.3)
 
+    # Log summary stats
+    logger.info(f"Download stats: {stats['downloaded']} saved / {stats['attempted']} attempted / {len(metadata_list)} total")
+    logger.debug(f"  Skip reasons: no_url={stats['skipped_no_url']}, duplicate={stats['skipped_duplicate']}, "
+                 f"existing={stats['skipped_existing']}, download_fail={stats['skipped_download_fail']}, "
+                 f"too_small={stats['skipped_too_small']}, save_error={stats['skipped_save_error']}")
     return successful
 
 
@@ -1448,4 +1545,17 @@ def run():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Stage 1: Data Scraper for manhole cover research")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging to console")
+    args = parser.parse_args()
+
+    logger = setup_logging(debug=args.debug)
+    logger.info(f"Scraper started (debug={'ON' if args.debug else 'OFF'})")
+    logger.info(f"Timeouts: request={REQUEST_TIMEOUT}s, download={DOWNLOAD_TIMEOUT}s, connect={CONNECT_TIMEOUT}s")
+
+    # List log file location
+    log_files = sorted(LOG_DIR.glob("scraper_*.log"), reverse=True)
+    if log_files:
+        logger.info(f"Log file: {log_files[0]}")
+
     run()

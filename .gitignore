@@ -4,4 +4,5 @@ output/
 *.png
 hf_cache/
 __pycache__/
+logs/
 .env
