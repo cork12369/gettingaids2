@@ -33,6 +33,11 @@ _job_lock = threading.Lock()
 job_state = {"running": False, "script": None, "started_at": None, "log": [], "thread": None}
 MAX_LOG_ENTRIES = 1000  # Limit log growth to prevent memory issues
 
+# ── Sample Generation Guard ────────────────────────────────────────────────────
+_sample_lock = threading.Lock()
+_sample_generating = False  # True while background thread builds grade_sample.csv
+_sample_generation_done = False  # True once sample has been built this lifecycle
+
 def _key_valid(p):
     if not ACCESS_KEY: return False
     return hmac.compare_digest(p.strip().upper().encode(), ACCESS_KEY.strip().upper().encode())
@@ -69,34 +74,69 @@ SAMPLE_TARGET = 2000
 # ── Grading Helpers ───────────────────────────────────────────────────────────
 
 def _ensure_sample():
-    """Generate the fixed 2000-snippet stratified sample (once)."""
-    if GRADE_SAMPLE.exists():
+    """Non-blocking sample generation — spawns a background thread on first call.
+    
+    Thread-safe: only one thread does the expensive CSV read + sampling.
+    Returns True immediately if sample already exists or generation was started.
+    Returns False only if source data is missing.
+    """
+    # Fast path: already generated this lifecycle or on disk
+    if _sample_generation_done or GRADE_SAMPLE.exists():
         return True
-    src = DATA_DIR / "text_with_sentiment.csv"
-    if not src.exists():
-        return False
-    import pandas as pd
-    df = pd.read_csv(src)
-    if "country" not in df.columns or len(df) == 0:
-        return False
-    countries = df["country"].unique().tolist()
-    if "unknown" in countries:
-        countries.remove("unknown")
-    if not countries:
-        return False
-    # Stratified capped allocation
-    per_country = max(SAMPLE_TARGET // len(countries), 1)
-    frames = []
-    for c in countries:
-        sub = df[df["country"] == c].sample(n=min(per_country, len(df[df["country"] == c])), random_state=42)
-        frames.append(sub)
-    sample = pd.concat(frames, ignore_index=True)
-    if len(sample) > SAMPLE_TARGET:
-        sample = sample.sample(n=SAMPLE_TARGET, random_state=42)
-    sample = sample.reset_index(drop=True)
-    sample["snippet_id"] = sample.index
-    sample.to_csv(GRADE_SAMPLE, index=False)
-    return True
+
+    with _sample_lock:
+        # Double-check after acquiring lock (another thread may have started it)
+        if _sample_generation_done or GRADE_SAMPLE.exists():
+            return True
+
+        # If a background thread is already building the sample, return True
+        # and let the thread complete — the frontend timeout handles waiting
+        if _sample_generating:
+            return True
+
+        src = DATA_DIR / "text_with_sentiment.csv"
+        if not src.exists():
+            return False
+
+        # Mark as generating and hand off to background thread
+        global _sample_generating
+        _sample_generating = True
+
+        def _build_sample():
+            """Background worker: read full CSV, stratified sample, write grade_sample.csv."""
+            try:
+                import pandas as pd
+                df = pd.read_csv(src)
+                if "country" not in df.columns or len(df) == 0:
+                    return
+                countries = df["country"].unique().tolist()
+                if "unknown" in countries:
+                    countries.remove("unknown")
+                if not countries:
+                    return
+                per_country = max(SAMPLE_TARGET // len(countries), 1)
+                frames = []
+                for c in countries:
+                    sub = df[df["country"] == c].sample(
+                        n=min(per_country, len(df[df["country"] == c])), random_state=42
+                    )
+                    frames.append(sub)
+                sample = pd.concat(frames, ignore_index=True)
+                if len(sample) > SAMPLE_TARGET:
+                    sample = sample.sample(n=SAMPLE_TARGET, random_state=42)
+                sample = sample.reset_index(drop=True)
+                sample["snippet_id"] = sample.index
+                sample.to_csv(GRADE_SAMPLE, index=False)
+            except Exception:
+                pass
+            finally:
+                global _sample_generating, _sample_generation_done
+                _sample_generating = False
+                _sample_generation_done = True
+
+        t = threading.Thread(target=_build_sample, daemon=True)
+        t.start()
+        return True
 
 def _total_chunks():
     if not GRADE_SAMPLE.exists():
