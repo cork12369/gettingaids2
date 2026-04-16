@@ -106,6 +106,7 @@ def _ensure_sample():
     Returns True immediately if sample already exists or generation was started.
     Returns False only if source data is missing.
     """
+    global _sample_generating
     # Fast path: already generated this lifecycle or on disk
     if _sample_generation_done or GRADE_SAMPLE.exists():
         return True
@@ -125,7 +126,6 @@ def _ensure_sample():
             return False
 
         # Mark as generating and hand off to background thread
-        global _sample_generating
         _sample_generating = True
 
         def _build_sample():
