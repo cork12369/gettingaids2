@@ -34,6 +34,7 @@ GitHub repo
                     ACCESS_KEY              ← base32 key for dashboard login
                     SESSION_SECRET          ← Flask session signing secret
                     OPENROUTER_API_KEY      ← for VLM+LLM image analysis
+                    YOUTUBE_API_KEY         ← for extra scraping coverage (optional)
 ```
 
 ---
@@ -121,14 +122,41 @@ Do this before the first run. Cannot be added retroactively without data loss.
 
 Zeabur dashboard → your service → Variables tab.
 
-Required variables:
+### Required variables
 
   DATA_DIR               = /data                 ← must match volume mount path
   ACCESS_KEY             = MFRA2YTBMJQXIZLB     ← from Step 0
   SESSION_SECRET         = 3f2a9c1d...           ← from Step 0
-  OPENROUTER_API_KEY     = your_openrouter_key   ← for AI image analysis (optional but recommended)
+
+### Optional feature variables
+
+  OPENROUTER_API_KEY     = your_openrouter_key   ← enables AI image analysis (Stage 3)
+  YOUTUBE_API_KEY        = your_youtube_key      ← enables YouTube scraping (Stage 1)
 
 Never put these in code or commit them to GitHub.
+
+### How to get a YouTube API Key
+
+  1. Go to https://console.cloud.google.com/
+  2. Create a new project (or select an existing one)
+  3. Navigate to APIs & Services → Library
+  4. Search for "YouTube Data API v3" → click Enable
+  5. Go to APIs & Services → Credentials
+  6. Click "Create Credentials" → "API Key"
+  7. (Recommended) Restrict the key to "YouTube Data API v3" only
+  8. Copy the key and paste it into Zeabur Variables as YOUTUBE_API_KEY
+
+  Without this key, Stage 1 still runs — it just skips YouTube enrichment
+  and you'll see in logs: "YOUTUBE: skipped (no YOUTUBE_API_KEY)"
+
+### How to get an OpenRouter API Key
+
+  1. Go to https://openrouter.ai/
+  2. Sign up / log in
+  3. Go to Keys → Create new key
+  4. Copy the key and paste it into Zeabur Variables as OPENROUTER_API_KEY
+
+  Without this key, Stage 3 runs in metadata-only mode (no AI visual analysis).
 
 ---
 
@@ -208,7 +236,12 @@ Rough estimate if running only during active use (~10 hrs total):
    Anything written outside /data/ is wiped on restart/redeploy.
    All scripts use DATA_DIR env var (default /data) to locate the volume.
 
-5. "PIPELINE RUNS BUT /data IS EMPTY"
+5. SCRAPING SKIPS YOUTUBE / AI IMAGE ANALYSIS
+   If you see "YOUTUBE: skipped" in Stage 1 logs, set YOUTUBE_API_KEY.
+   If Stage 3 says "OPENROUTER_API_KEY not set", set OPENROUTER_API_KEY.
+   Both are optional — the pipeline still runs without them, just with less data.
+
+6. "PIPELINE RUNS BUT /data IS EMPTY"
    This is the #1 deployment issue. Causes in order of likelihood:
    a) Persistent volume not mounted → check Volumes tab, Mount Path must be /data
    b) DATA_DIR env var not set or wrong value → check it equals /data
@@ -218,7 +251,7 @@ Rough estimate if running only during active use (~10 hrs total):
      [DIAG] DATA_DIR = /data
      [DIAG] /data writable = True
 
-6. RATE LIMIT STATE IS IN-MEMORY
+7. RATE LIMIT STATE IS IN-MEMORY
    flask-limiter uses memory storage (resets on service restart).
    Fine for a student project — not suitable for high-security production.
 
@@ -237,3 +270,4 @@ Rough estimate if running only during active use (~10 hrs total):
 [ ] Persistent volume mounted at /data/ in Zeabur before first run
 [ ] DATA_DIR=/data set in Zeabur environment variables
 [ ] OPENROUTER_API_KEY set (optional — enables AI image analysis)
+[ ] YOUTUBE_API_KEY set (optional — enables YouTube scraping enrichment)
