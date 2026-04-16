@@ -9,27 +9,31 @@ GitHub repo
     └─► Zeabur (auto-deploy on push)
             │
             ├── Python service (Flask dashboard + auth + pipeline scripts)
-            │       app.py                   ← web entrypoint + auth
-            │       01_scrape_reddit.py
-            │       02_scrape_images.py
-            │       03_sentiment_analysis.py
-            │       04_image_processing.py
-            │       05_cross_analysis.py
+            │       app.py                   ← web entrypoint + auth + DATA_DIR setup
+            │       01_scrape_data.py        ← text + image scraping
+            │       03_sentiment_analysis.py ← RoBERTa NLP sentiment
+            │       04_image_processing.py   ← VLM + LLM image analysis
+            │       05_cross_analysis.py     ← sentiment × image correlation
+            │       06_confusion_matrix.py   ← human vs AI validation
+            │       06_visualize_images.py   ← image grid visualizations
+            │       07_evaluate_design.py    ← design opportunity scoring
+            │       08_generate_report.py    ← final report generation
             │
-            ├── Persistent Volume → /data/
+            ├── Persistent Volume → /data/   (path controlled by DATA_DIR env var)
             │       /data/images/            ← downloaded images (~500MB)
             │       /data/hf_cache/          ← HuggingFace model cache
-            │       /data/reddit_raw.csv
-            │       /data/image_features.csv
+            │       /data/text_raw.csv
+            │       /data/image_metadata.csv
+            │       /data/text_with_sentiment.csv
+            │       /data/grade_sample.csv
+            │       /data/human_grades.csv
             │       /data/output/            ← charts + CSVs for download
             │
             └── Environment Variables (set in Zeabur dashboard)
+                    DATA_DIR                ← storage root (default: /data)
                     ACCESS_KEY              ← base32 key for dashboard login
                     SESSION_SECRET          ← Flask session signing secret
-                    REDDIT_CLIENT_ID
-                    REDDIT_CLIENT_SECRET
-                    FLICKR_KEY
-                    FLICKR_SECRET
+                    OPENROUTER_API_KEY      ← for VLM+LLM image analysis
 ```
 
 ---
@@ -55,15 +59,19 @@ Save both outputs — you'll need them in Step 4.
 Structure your repo exactly like this at the root:
 
 ```
-manhole-pipeline/
+gettingaids2/
 ├── app.py                      ← must be at root (Zeabur entrypoint)
 ├── requirements.txt            ← must be at root
 ├── zbpack.json                 ← must be at root
-├── 01_scrape_reddit.py
-├── 02_scrape_images.py
+├── runtime.txt                 ← must be at root
+├── 01_scrape_data.py
 ├── 03_sentiment_analysis.py
 ├── 04_image_processing.py
-└── 05_cross_analysis.py
+├── 05_cross_analysis.py
+├── 06_confusion_matrix.py
+├── 06_visualize_images.py
+├── 07_evaluate_design.py
+└── 08_generate_report.py
 ```
 
 Add a .gitignore:
@@ -78,13 +86,13 @@ __pycache__/
 .env
 ```
 
-IMPORTANT — update all pipeline scripts to use /data/ paths:
-  "data/reddit_raw.csv"   →  "/data/reddit_raw.csv"
-  "data/images/"          →  "/data/images/"
-  "output/"               →  "/data/output/"
-
-Also add this line to 03_sentiment_analysis.py (model caching):
-  os.environ["TRANSFORMERS_CACHE"] = "/data/hf_cache"
+IMPORTANT — DATA_DIR path handling (already configured in current code):
+  • All scripts read DATA_DIR = os.getenv('DATA_DIR', '/data')
+  • On Zeabur: set env var DATA_DIR=/data (matches the persistent volume mount)
+  • Locally: scripts default to ./data if DATA_DIR is not set
+  • app.py prints [DIAG] lines at startup showing the resolved DATA_DIR
+  • app.py falls back to ./data if /data is not writable
+  • TRANSFORMERS_CACHE is set dynamically inside 03_sentiment_analysis.py
 
 ---
 
@@ -112,14 +120,13 @@ Do this before the first run. Cannot be added retroactively without data loss.
 ## Step 4 — Set Environment Variables
 
 Zeabur dashboard → your service → Variables tab.
-Add all six variables:
 
+Required variables:
+
+  DATA_DIR               = /data                 ← must match volume mount path
   ACCESS_KEY             = MFRA2YTBMJQXIZLB     ← from Step 0
   SESSION_SECRET         = 3f2a9c1d...           ← from Step 0
-  REDDIT_CLIENT_ID       = your_reddit_id
-  REDDIT_CLIENT_SECRET   = your_reddit_secret
-  FLICKR_KEY             = your_flickr_key
-  FLICKR_SECRET          = your_flickr_secret
+  OPENROUTER_API_KEY     = your_openrouter_key   ← for AI image analysis (optional but recommended)
 
 Never put these in code or commit them to GitHub.
 
@@ -199,9 +206,19 @@ Rough estimate if running only during active use (~10 hrs total):
 
 4. VOLUME IS THE ONLY PERSISTENT STORAGE
    Anything written outside /data/ is wiped on restart/redeploy.
-   All scripts must write to /data/ paths.
+   All scripts use DATA_DIR env var (default /data) to locate the volume.
 
-5. RATE LIMIT STATE IS IN-MEMORY
+5. "PIPELINE RUNS BUT /data IS EMPTY"
+   This is the #1 deployment issue. Causes in order of likelihood:
+   a) Persistent volume not mounted → check Volumes tab, Mount Path must be /data
+   b) DATA_DIR env var not set or wrong value → check it equals /data
+   c) Volume mounted but app lacks write permission → check startup logs for [DIAG] lines
+   d) Build cache serving stale code → clear build cache in Zeabur and redeploy
+   To verify: check Zeabur deploy logs for lines like:
+     [DIAG] DATA_DIR = /data
+     [DIAG] /data writable = True
+
+6. RATE LIMIT STATE IS IN-MEMORY
    flask-limiter uses memory storage (resets on service restart).
    Fine for a student project — not suitable for high-security production.
 
@@ -212,9 +229,11 @@ Rough estimate if running only during active use (~10 hrs total):
 [ ] app.py at repo root
 [ ] requirements.txt at repo root (includes flask-limiter>=3.5.0)
 [ ] zbpack.json at repo root
-[ ] All scripts use /data/ paths
-[ ] os.environ["TRANSFORMERS_CACHE"] = "/data/hf_cache" in script 03
+[ ] runtime.txt at repo root
+[ ] All scripts use DATA_DIR = os.getenv('DATA_DIR', '/data') for paths
 [ ] No API keys or secrets in any .py file
 [ ] .gitignore covers data/, output/, *.csv, *.png, .env
 [ ] ACCESS_KEY and SESSION_SECRET generated and ready to paste
 [ ] Persistent volume mounted at /data/ in Zeabur before first run
+[ ] DATA_DIR=/data set in Zeabur environment variables
+[ ] OPENROUTER_API_KEY set (optional — enables AI image analysis)

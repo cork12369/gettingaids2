@@ -653,7 +653,10 @@ manhole-pipeline/
 └── 06_confusion_matrix.py
 ```
 
-**Critical:** All scripts must use `/data/` paths (not relative paths).
+**Critical:** All scripts use `DATA_DIR = os.getenv('DATA_DIR', '/data')` for paths.
+- On Zeabur: set `DATA_DIR=/data` (matches the persistent volume mount)
+- Locally: defaults to `./data` if `DATA_DIR` is not set
+- `app.py` prints `[DIAG]` lines at startup showing the resolved path and writability
 
 Add to `.gitignore`:
 ```
@@ -682,11 +685,12 @@ Zeabur dashboard → Service → Volumes tab:
 
 ### Step 4: Set Environment Variables
 
-| Variable | Value Source |
-|----------|-------------|
-| `ACCESS_KEY` | Generated via `python -c "import base64, os; print(base64.b32encode(os.urandom(10)).decode())"` |
-| `SESSION_SECRET` | Generated via `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `OPENROUTER_API_KEY` | Your OpenRouter API key (optional — enables AI image analysis) |
+| Variable | Required | Value Source |
+|----------|----------|-------------|
+| `DATA_DIR` | **Yes** | Set to `/data` (must match volume mount path) |
+| `ACCESS_KEY` | **Yes** | Generated via `python -c "import base64, os; print(base64.b32encode(os.urandom(10)).decode())"` |
+| `SESSION_SECRET` | **Yes** | Generated via `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `OPENROUTER_API_KEY` | Recommended | Your OpenRouter API key (enables AI image analysis via VLM+LLM) |
 
 ### Step 5: Set Resources
 
@@ -805,6 +809,22 @@ Then call it in the `run()` function.
 | Rate limiting on scraping | Increase `SCRAPE_DELAY` range |
 | Memory errors in sentiment | Reduce batch_size from 32 to 16 |
 | Image download failures | Check network connectivity, retry later |
+| **Pipeline runs but `/data` is empty** | See "Empty `/data` after pipeline run" below |
+
+#### Empty `/data` after pipeline run
+
+This is the most common deployment issue. Check in this order:
+
+1. **Volume not mounted** — Zeabur dashboard → Service → Volumes tab → ensure Mount Path is `/data`
+2. **`DATA_DIR` not set** — Zeabur dashboard → Variables tab → add `DATA_DIR=/data`
+3. **Wrong mount path** — the env var `DATA_DIR` must exactly match the volume mount path
+4. **Stale build cache** — clear build cache in Zeabur and redeploy
+5. **Permission issue** — check startup logs for `[DIAG]` lines:
+   ```
+   [DIAG] DATA_DIR = /data
+   [DIAG] /data writable = True
+   ```
+   If writable is `False`, the app falls back to `./data` (which is ephemeral and wipes on redeploy).
 
 #### Debug Mode
 
@@ -831,13 +851,13 @@ logging.basicConfig(level=logging.DEBUG)
 
 ### File Locations
 
-All outputs are stored in `/data/output/`:
-- Charts: `/data/output/` (root level)
-- Cross Analysis: `/data/output/cross_analysis_visualizations/`
-- Reports: CSV files in `/data/output/`
-- Images: `/data/images/<country>/`
+All outputs are stored under `DATA_DIR` (default `/data` on Zeabur, `./data` locally):
+- Charts: `<DATA_DIR>/output/` (root level)
+- Cross Analysis: `<DATA_DIR>/output/cross_analysis_visualizations/`
+- Reports: CSV files in `<DATA_DIR>/output/`
+- Images: `<DATA_DIR>/images/<country>/`
 
 ---
 
-*Documentation Version: 2.0*  
+*Documentation Version: 2.1*  
 *Last Updated: April 2026*
