@@ -130,10 +130,21 @@ Zeabur dashboard → your service → Variables tab.
 
 ### Optional feature variables
 
+  ADMIN_RESET_PASSWORD   = your_admin_password   ← enables admin reset controls on dashboard
   OPENROUTER_API_KEY     = your_openrouter_key   ← enables AI image analysis (Stage 3)
   YOUTUBE_API_KEY        = your_youtube_key      ← enables YouTube scraping (Stage 1)
 
 Never put these in code or commit them to GitHub.
+
+### How to set the Admin Reset Password
+
+  Choose any strong password you'll remember. This unlocks the admin panel
+  on the dashboard (soft reset, reset analysis, full reset, reset & rerun).
+
+  Example:
+    ADMIN_RESET_PASSWORD = MyStr0ngP@ssw0rd!
+
+  Without this variable, the admin reset buttons on the dashboard will not work.
 
 ### How to get a YouTube API Key
 
@@ -269,5 +280,6 @@ Rough estimate if running only during active use (~10 hrs total):
 [ ] ACCESS_KEY and SESSION_SECRET generated and ready to paste
 [ ] Persistent volume mounted at /data/ in Zeabur before first run
 [ ] DATA_DIR=/data set in Zeabur environment variables
+[ ] ADMIN_RESET_PASSWORD set (optional — enables admin reset controls)
 [ ] OPENROUTER_API_KEY set (optional — enables AI image analysis)
 [ ] YOUTUBE_API_KEY set (optional — enables YouTube scraping enrichment)
