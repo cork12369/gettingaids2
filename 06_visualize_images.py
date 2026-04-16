@@ -23,7 +23,7 @@ import numpy as np
 from pathlib import Path
 
 # Paths
-DATA_DIR = Path("/data")
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 OUTPUT_DIR = DATA_DIR / "output"
 IMAGE_ANALYSIS_CSV = OUTPUT_DIR / "image_analysis.csv"
 

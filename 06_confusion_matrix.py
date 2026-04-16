@@ -24,7 +24,8 @@ from sklearn.metrics import (
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-DATA_DIR = Path("/data")
+import os
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 OUTPUT_DIR = DATA_DIR / "output"
 GRADE_SAMPLE = DATA_DIR / "grade_sample.csv"
 HUMAN_GRADES = DATA_DIR / "human_grades.csv"

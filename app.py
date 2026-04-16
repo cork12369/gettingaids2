@@ -88,9 +88,52 @@ def require_auth(f):
     return dec
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DATA_DIR = Path("/data")
+DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 OUTPUT_DIR = DATA_DIR / "output"
 IMAGES_DIR = DATA_DIR / "images"
+
+# ── Startup diagnostics ────────────────────────────────────────────────────────
+def _diagnose_data_dir():
+    """Print diagnostic info about DATA_DIR on startup."""
+    print(f"[DIAG] DATA_DIR = {DATA_DIR}")
+    print(f"[DIAG] DATA_DIR exists: {DATA_DIR.exists()}")
+    if DATA_DIR.exists():
+        try:
+            items = list(DATA_DIR.iterdir())
+            print(f"[DIAG] DATA_DIR contents ({len(items)} items): {[p.name for p in items[:20]]}")
+        except Exception as e:
+            print(f"[DIAG] DATA_DIR iterdir error: {e}")
+    else:
+        print(f"[DIAG] Attempting to create {DATA_DIR}...")
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            print(f"[DIAG] Successfully created {DATA_DIR}")
+        except Exception as e:
+            print(f"[DIAG] FAILED to create {DATA_DIR}: {e}")
+            print(f"[DIAG] Falling back to ./data")
+            global DATA_DIR, OUTPUT_DIR, IMAGES_DIR
+            DATA_DIR = Path("./data")
+            OUTPUT_DIR = DATA_DIR / "output"
+            IMAGES_DIR = DATA_DIR / "images"
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            print(f"[DIAG] Using fallback DATA_DIR = {DATA_DIR.resolve()}")
+
+    # Check write permissions
+    test_file = DATA_DIR / ".write_test"
+    try:
+        test_file.write_text("ok")
+        test_file.unlink()
+        print(f"[DIAG] Write permission: OK")
+    except Exception as e:
+        print(f"[DIAG] Write permission FAILED: {e}")
+
+    print(f"[DIAG] OUTPUT_DIR = {OUTPUT_DIR}")
+    print(f"[DIAG] IMAGES_DIR = {IMAGES_DIR}")
+
+    # Ensure subprocess children see the same DATA_DIR
+    os.environ["DATA_DIR"] = str(DATA_DIR)
+
+_diagnose_data_dir()
 GRADE_SAMPLE = DATA_DIR / "grade_sample.csv"
 GRADER_ASSIGN = DATA_DIR / "grader_assignments.csv"
 HUMAN_GRADES = DATA_DIR / "human_grades.csv"

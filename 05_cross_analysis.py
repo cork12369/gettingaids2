@@ -25,11 +25,12 @@ from pathlib import Path
 from scipy.stats import pearsonr
 
 # Paths
-TEXT_CSV        = Path("/data/text_with_sentiment.csv")
-SENTIMENT_CSV   = Path("/data/output/sentiment_summary.csv")
-IMAGE_CSV       = Path("/data/output/image_analysis.csv")
-OUTPUT_DIR      = Path("/data/output")
-CROSS_DIR       = Path("/data/output/cross_analysis_visualizations")
+DATA_ROOT       = Path(os.getenv("DATA_DIR", "/data"))
+TEXT_CSV        = DATA_ROOT / "text_with_sentiment.csv"
+SENTIMENT_CSV   = DATA_ROOT / "output" / "sentiment_summary.csv"
+IMAGE_CSV       = DATA_ROOT / "output" / "image_analysis.csv"
+OUTPUT_DIR      = DATA_ROOT / "output"
+CROSS_DIR       = DATA_ROOT / "output" / "cross_analysis_visualizations"
 OUTPUT_CSV      = OUTPUT_DIR / "cross_analysis.csv"
 SUMMARY_CSV     = OUTPUT_DIR / "analysis_summary.csv"
 WEIGHTS_JSON    = OUTPUT_DIR / "design_weights.json"
@@ -254,8 +255,8 @@ def plot_coverage_summary(text_df, img_df, output_dir):
 
 def plot_human_ai_agreement(text_df, output_dir):
     """Figure 7: Human vs AI Sentiment Agreement by Country."""
-    human_grades_path = Path("/data/human_grades.csv")
-    grade_sample_path = Path("/data/grade_sample.csv")
+    human_grades_path = DATA_ROOT / "human_grades.csv"
+    grade_sample_path = DATA_ROOT / "grade_sample.csv"
     if not human_grades_path.exists() or not grade_sample_path.exists():
         print("  ⚠ No human grades yet — skipping Human vs AI agreement chart")
         return
@@ -1167,13 +1168,13 @@ def cross_analyze():
             summary["countries_with_images"] = img_df['country'].nunique()
 
     # ── Human grading metrics (optional) ────────────────────────────────────
-    human_grades_path = Path("/data/human_grades.csv")
+    human_grades_path = DATA_ROOT / "human_grades.csv"
     if human_grades_path.exists():
         import pandas as pd
         hgrades = pd.read_csv(human_grades_path)
         summary["human_grades_total"] = len(hgrades)
         if len(hgrades) > 0:
-            grade_sample_path = Path("/data/grade_sample.csv")
+            grade_sample_path = DATA_ROOT / "grade_sample.csv"
             if grade_sample_path.exists():
                 gsample = pd.read_csv(grade_sample_path)
                 gsample["snippet_id"] = gsample["snippet_id"].astype(str)

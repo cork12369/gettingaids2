@@ -6,7 +6,7 @@ Tags each record by inferred country/region for cross-cultural comparison.
 Install: pip install pandas transformers torch scikit-learn matplotlib seaborn
 """
 
-import re
+import os, re
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -20,8 +20,8 @@ from pathlib import Path
 # Alternative: "distilbert-base-uncased-finetuned-sst-2-english" (simpler, faster)
 SENTIMENT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 
-# Support both Zeabur (/data) and local development (./data)
-_data_root = Path("/data") if Path("/data").exists() else Path("./data")
+# Single source of truth for data directory
+_data_root = Path(os.getenv("DATA_DIR", "/data"))
 OUTPUT_DIR = _data_root / "output"
 TEXT_CSV = _data_root / "text_raw.csv"
 SENTIMENT_CSV = _data_root / "text_with_sentiment.csv"
