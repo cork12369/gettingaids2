@@ -95,6 +95,7 @@ IMAGES_DIR = DATA_DIR / "images"
 # ── Startup diagnostics ────────────────────────────────────────────────────────
 def _diagnose_data_dir():
     """Print diagnostic info about DATA_DIR on startup."""
+    global DATA_DIR, OUTPUT_DIR, IMAGES_DIR
     print(f"[DIAG] DATA_DIR = {DATA_DIR}")
     print(f"[DIAG] DATA_DIR exists: {DATA_DIR.exists()}")
     if DATA_DIR.exists():
@@ -111,7 +112,6 @@ def _diagnose_data_dir():
         except Exception as e:
             print(f"[DIAG] FAILED to create {DATA_DIR}: {e}")
             print(f"[DIAG] Falling back to ./data")
-            global DATA_DIR, OUTPUT_DIR, IMAGES_DIR
             DATA_DIR = Path("./data")
             OUTPUT_DIR = DATA_DIR / "output"
             IMAGES_DIR = DATA_DIR / "images"
