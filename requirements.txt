@@ -2,6 +2,7 @@
 flask>=3.0.0
 flask-limiter>=3.5.0
 gunicorn>=21.0.0
+python-dotenv>=1.0.0
 
 # Scraping - fully keyless, no API accounts needed
 duckduckgo-search>=6.2.0

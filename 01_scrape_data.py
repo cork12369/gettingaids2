@@ -2,8 +2,8 @@
 STAGE 1: Data Scraper (keyless)
 Replaces 01_scrape_reddit.py + 02_scrape_images.py
 
-Text:   DuckDuckGo search snippets + blog scraping → sentiment corpus
-Images: DuckDuckGo image search + Wikimedia Commons → visual corpus
+Text:   DuckDuckGo search snippets + blog scraping -> sentiment corpus
+Images: DuckDuckGo image search + Wikimedia Commons -> visual corpus
 
 Install: pip install duckduckgo-search requests beautifulsoup4 pillow pandas
 No API keys required.
@@ -19,7 +19,7 @@ from PIL import Image
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config -------------------------------------------------------------------
 
 DATA_DIR     = Path("/data")
 IMG_DIR      = Path("/data/images")
@@ -103,7 +103,7 @@ COUNTRY_KEYWORDS = {
     "india":     ["india", "indian", "mumbai", "delhi"],
 }
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -----------------------------------------------------------------
 
 def sleep():
     time.sleep(random.uniform(*SCRAPE_DELAY))
@@ -124,11 +124,11 @@ def safe_get(url: str, timeout: int = 12) -> requests.Response | None:
         resp.raise_for_status()
         return resp
     except Exception as e:
-        print(f"    ⚠ GET failed {url[:60]}: {e}")
+        print(f"    ! GET failed {url[:60]}: {e}")
         return None
 
 
-# ── Text Scraping ─────────────────────────────────────────────────────────────
+# -- Text Scraping -----------------------------------------------------------
 
 def scrape_ddg_text(country: str, queries: list[str]) -> list[dict]:
     """
@@ -144,7 +144,7 @@ def scrape_ddg_text(country: str, queries: list[str]) -> list[dict]:
             try:
                 hits = ddgs.text(query, max_results=MAX_TEXT_ITEMS)
             except Exception as e:
-                print(f"    ⚠ DDG error: {e}")
+                print(f"    ! DDG error: {e}")
                 sleep()
                 continue
 
@@ -214,11 +214,11 @@ def scrape_page_text(url: str, max_chars: int = 3000) -> str | None:
         return text[:max_chars] if len(text) > 100 else None
 
     except Exception as e:
-        print(f"    ⚠ Parse error {url[:50]}: {e}")
+        print(f"    ! Parse error {url[:50]}: {e}")
         return None
 
 
-# ── Image Scraping ────────────────────────────────────────────────────────────
+# -- Image Scraping ----------------------------------------------------------
 
 def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
     """Fetch image URLs via DDG image search."""
@@ -230,7 +230,7 @@ def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
             try:
                 hits = ddgs.images(query, max_results=MAX_IMG_ITEMS)
             except Exception as e:
-                print(f"    ⚠ DDG error: {e}")
+                print(f"    ! DDG error: {e}")
                 sleep()
                 continue
 
@@ -306,7 +306,7 @@ def resolve_wikimedia_url(title: str) -> str | None:
         return None
 
 
-# ── Image Downloader ──────────────────────────────────────────────────────────
+# -- Image Downloader --------------------------------------------------------
 
 def download_images(metadata_list: list[dict]) -> list[dict]:
     """Download and validate images, save to /data/images/<country>/."""
@@ -348,14 +348,14 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
             successful.append(item)
 
         except Exception as e:
-            print(f"    ⚠ Image save failed: {e}")
+            print(f"    ! Image save failed: {e}")
 
         time.sleep(0.3)
 
     return successful
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# -- Main --------------------------------------------------------------------
 
 def run():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -364,23 +364,23 @@ def run():
     all_text   = []
     all_images = []
 
-    # ── Text scraping ──────────────────────────────────────────────────────────
+    # -- Text scraping --------------------------------------------------------
     print("\n=== TEXT SCRAPING ===")
     for country, queries in TEXT_QUERIES.items():
         print(f"\n[{country.upper()}]")
         items = scrape_ddg_text(country, queries)
         all_text.extend(items)
-        print(f"  → {len(items)} text records")
+        print(f"  -> {len(items)} text records")
 
     # Save text corpus
     text_df = pd.DataFrame(all_text)
     text_df = text_df[text_df["text"].str.strip().str.len() > 30]
     text_df = text_df.drop_duplicates(subset=["url", "source"])
     text_df.to_csv(TEXT_CSV, index=False)
-    print(f"\n✓ Text corpus: {len(text_df)} records → {TEXT_CSV}")
+    print(f"\nText corpus: {len(text_df)} records -> {TEXT_CSV}")
     print(text_df.groupby(["country", "source"]).size().to_string())
 
-    # ── Image scraping ─────────────────────────────────────────────────────────
+    # -- Image scraping --------------------------------------------------------
     print("\n\n=== IMAGE SCRAPING ===")
 
     # DDG images
@@ -388,7 +388,7 @@ def run():
         print(f"\n[{country.upper()}] DDG")
         items = scrape_ddg_images(country, queries)
         all_images.extend(items)
-        print(f"  → {len(items)} image URLs")
+        print(f"  -> {len(items)} image URLs")
 
     # Wikimedia (higher quality, keep separate)
     print("\n[WIKIMEDIA]")
@@ -402,7 +402,7 @@ def run():
 
     img_df = pd.DataFrame(downloaded)
     img_df.to_csv(IMG_META_CSV, index=False)
-    print(f"\n✓ Images: {len(downloaded)} downloaded → {IMG_META_CSV}")
+    print(f"\nImages: {len(downloaded)} downloaded -> {IMG_META_CSV}")
     print(img_df.groupby(["country", "source"]).size().to_string())
 
     print("\n=== SCRAPING COMPLETE ===")

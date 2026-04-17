@@ -6,9 +6,13 @@ Flask dashboard to trigger pipeline stages, view outputs, and run human grading.
 import os, csv, uuid, hmac, shutil, threading, subprocess, time, json, io, re, base64, hashlib
 from pathlib import Path
 from functools import wraps
+from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template_string, request, session, redirect, url_for, send_file
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+
+# Load .env file for local development
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "change-me-in-zeabur-env")
