@@ -21,10 +21,10 @@ from duckduckgo_search import DDGS
 
 # -- Config -------------------------------------------------------------------
 
-DATA_DIR     = Path("/data")
-IMG_DIR      = Path("/data/images")
-TEXT_CSV     = Path("/data/text_raw.csv")
-IMG_META_CSV = Path("/data/image_metadata.csv")
+DATA_DIR     = Path("data")
+IMG_DIR      = Path("data/images")
+TEXT_CSV     = DATA_DIR / "text_raw.csv"
+IMG_META_CSV = DATA_DIR / "image_metadata.csv"
 
 MIN_IMG_SIZE   = 200    # px — skip thumbnails
 MAX_TEXT_ITEMS = 80     # per query

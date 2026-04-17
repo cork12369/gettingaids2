@@ -52,7 +52,7 @@ from sklearn.cluster import MiniBatchKMeans
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-DATA_DIR       = Path(os.getenv("DATA_DIR", "/data"))
+DATA_DIR       = Path(os.getenv("DATA_DIR", "data"))
 IMAGE_BASE     = DATA_DIR / "images"
 OUTPUT_DIR     = DATA_DIR / "output"
 OUTPUT_CSV     = OUTPUT_DIR / "image_analysis.csv"

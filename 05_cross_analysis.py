@@ -25,7 +25,7 @@ from pathlib import Path
 from scipy.stats import pearsonr
 
 # Paths
-DATA_ROOT       = Path(os.getenv("DATA_DIR", "/data"))
+DATA_ROOT       = Path(os.getenv("DATA_DIR", "data"))
 TEXT_CSV        = DATA_ROOT / "text_with_sentiment.csv"
 SENTIMENT_CSV   = DATA_ROOT / "output" / "sentiment_summary.csv"
 IMAGE_CSV       = DATA_ROOT / "output" / "image_analysis.csv"
@@ -1170,7 +1170,6 @@ def cross_analyze():
     # ── Human grading metrics (optional) ────────────────────────────────────
     human_grades_path = DATA_ROOT / "human_grades.csv"
     if human_grades_path.exists():
-        import pandas as pd
         hgrades = pd.read_csv(human_grades_path)
         summary["human_grades_total"] = len(hgrades)
         if len(hgrades) > 0:

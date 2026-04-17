@@ -37,7 +37,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-DATA_DIR   = Path(os.getenv("DATA_DIR", "/data"))
+DATA_DIR   = Path(os.getenv("DATA_DIR", "data"))
 OUTPUT_DIR = DATA_DIR / "output"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -494,12 +494,12 @@ def generate_report(fmt="both", output_dir=None):
     if fmt in ("csv", "both"):
         df = pd.DataFrame(all_rows)
         df.to_csv(REPORT_CSV, index=False)
-        print(f"\n  ✓ CSV: {REPORT_CSV}")
+        print(f"\n  [OK] CSV: {REPORT_CSV}")
 
     # Save PDF
     if fmt in ("pdf", "both"):
         generate_pdf(all_rows)
-        print(f"  ✓ PDF: {REPORT_PDF}")
+        print(f"  [OK] PDF: {REPORT_PDF}")
 
     # Summary
     df = pd.DataFrame(all_rows)

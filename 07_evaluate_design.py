@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-DATA_DIR   = Path(os.getenv("DATA_DIR", "/data"))
+DATA_DIR   = Path(os.getenv("DATA_DIR", "data"))
 OUTPUT_DIR = DATA_DIR / "output"
 WEIGHTS_JSON = OUTPUT_DIR / "design_weights.json"
 

@@ -25,7 +25,7 @@ from sklearn.metrics import (
 # ── Config ────────────────────────────────────────────────────────────────────
 
 import os
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
 OUTPUT_DIR = DATA_DIR / "output"
 GRADE_SAMPLE = DATA_DIR / "grade_sample.csv"
 HUMAN_GRADES = DATA_DIR / "human_grades.csv"
@@ -204,7 +204,7 @@ def plot_all(metrics, merged, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "confusion_matrix.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: confusion_matrix.png")
+    print(f"  [OK] Saved: confusion_matrix.png")
 
 
 def save_reports(metrics, output_dir):
@@ -229,7 +229,7 @@ def save_reports(metrics, output_dir):
     })
     report_df = pd.DataFrame(rows)
     report_df.to_csv(output_dir / "classification_report.csv", index=False)
-    print(f"  ✓ Saved: classification_report.csv")
+    print(f"  [OK] Saved: classification_report.csv")
 
     # Country accuracy
     if metrics["country_accuracy"]:
@@ -238,7 +238,7 @@ def save_reports(metrics, output_dir):
             for k, v in metrics["country_accuracy"].items()
         ])
         ca_df.to_csv(output_dir / "country_accuracy.csv", index=False)
-        print(f"  ✓ Saved: country_accuracy.csv")
+    print(f"  [OK] Saved: country_accuracy.csv")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -288,7 +288,7 @@ def run():
     save_reports(metrics, OUTPUT_DIR)
 
     print(f"\n{'='*50}")
-    print(f"✓ Confusion Matrix Analysis Complete")
+    print(f"[OK] Confusion Matrix Analysis Complete")
     print(f"{'='*50}")
     print(f"  Outputs saved to: {OUTPUT_DIR}")
 

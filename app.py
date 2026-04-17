@@ -92,7 +92,7 @@ def require_auth(f):
     return dec
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
+DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
 OUTPUT_DIR = DATA_DIR / "output"
 IMAGES_DIR = DATA_DIR / "images"
 

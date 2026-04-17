@@ -21,7 +21,7 @@ from pathlib import Path
 SENTIMENT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
 
 # Single source of truth for data directory
-_data_root = Path(os.getenv("DATA_DIR", "/data"))
+_data_root = Path(os.getenv("DATA_DIR", "data"))
 OUTPUT_DIR = _data_root / "output"
 TEXT_CSV = _data_root / "text_raw.csv"
 SENTIMENT_CSV = _data_root / "text_with_sentiment.csv"
