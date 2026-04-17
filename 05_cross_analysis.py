@@ -10,7 +10,7 @@ Reads from:
 Outputs:
   /data/output/cross_analysis.csv
   /data/output/analysis_summary.csv
-  /data/output/design_weights.json          ← correlation model (weighted scoring function)
+  /data/output/design_weights.json <- correlation model (weighted scoring function)
   /data/output/cross_analysis_visualizations/
 """
 
@@ -82,7 +82,7 @@ def plot_text_vs_image_by_country(text_df, img_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "text_vs_image_by_country.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: text_vs_image_by_country.png")
+    print(f"  [OK] Saved: text_vs_image_by_country.png")
 
 
 def plot_sentiment_vs_image_volume(text_df, img_df, output_dir):
@@ -97,7 +97,7 @@ def plot_sentiment_vs_image_volume(text_df, img_df, output_dir):
     countries = sorted(set(sentiment_by_country.index) & set(img_counts.index))
     
     if not countries:
-        print("  ⚠ Not enough data for scatter plot")
+        print("  [!] Not enough data for scatter plot")
         plt.close()
         return
     
@@ -130,7 +130,7 @@ def plot_sentiment_vs_image_volume(text_df, img_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "sentiment_vs_image_volume.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: sentiment_vs_image_volume.png")
+    print(f"  [OK] Saved: sentiment_vs_image_volume.png")
 
 
 def plot_combined_country_summary(text_df, img_df, sentiment_summary, output_dir):
@@ -180,7 +180,7 @@ def plot_combined_country_summary(text_df, img_df, sentiment_summary, output_dir
     plt.tight_layout()
     plt.savefig(output_dir / "combined_country_summary.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: combined_country_summary.png")
+    print(f"  [OK] Saved: combined_country_summary.png")
 
 
 def plot_balance_ratio_chart(text_df, img_df, output_dir):
@@ -220,7 +220,7 @@ def plot_balance_ratio_chart(text_df, img_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "balance_ratio_chart.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: balance_ratio_chart.png")
+    print(f"  [OK] Saved: balance_ratio_chart.png")
 
 
 def plot_coverage_summary(text_df, img_df, output_dir):
@@ -250,7 +250,7 @@ def plot_coverage_summary(text_df, img_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "coverage_summary.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: coverage_summary.png")
+    print(f"  [OK] Saved: coverage_summary.png")
 
 
 def plot_human_ai_agreement(text_df, output_dir):
@@ -258,7 +258,7 @@ def plot_human_ai_agreement(text_df, output_dir):
     human_grades_path = DATA_ROOT / "human_grades.csv"
     grade_sample_path = DATA_ROOT / "grade_sample.csv"
     if not human_grades_path.exists() or not grade_sample_path.exists():
-        print("  ⚠ No human grades yet — skipping Human vs AI agreement chart")
+        print("  [!] No human grades yet - skipping Human vs AI agreement chart")
         return
 
     import pandas as pd
@@ -270,7 +270,7 @@ def plot_human_ai_agreement(text_df, output_dir):
     grades["snippet_id"] = grades["snippet_id"].astype(str)
     merged = grades.merge(sample[["snippet_id", "country", "label"]], on="snippet_id", how="left")
 
-    # Map scores to labels: human_score 0→NEG, 1→NEU, 2→POS
+    # Map scores to labels: human_score 0->NEG, 1->NEU, 2->POS
     def _human_label(s):
         s = int(s)
         return {-1: "NEG", 0: "NEU", 1: "POS"}.get(s, "NEU")
@@ -282,7 +282,7 @@ def plot_human_ai_agreement(text_df, output_dir):
     merged["agree"] = merged["human_label"] == merged["ai_short"]
 
     if "country" not in merged.columns or merged["country"].dropna().empty:
-        print("  ⚠ No country data in human grades — skipping agreement chart")
+        print("  [!] No country data in human grades - skipping agreement chart")
         return
 
     agreement = merged.groupby("country")["agree"].mean().sort_values(ascending=False)
@@ -307,7 +307,7 @@ def plot_human_ai_agreement(text_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "human_ai_agreement.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: human_ai_agreement.png")
+    print(f"  [OK] Saved: human_ai_agreement.png")
 
 
 def plot_sentiment_heatmap(text_df, output_dir):
@@ -331,12 +331,12 @@ def plot_sentiment_heatmap(text_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "sentiment_heatmap.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: sentiment_heatmap.png")
+    print(f"  [OK] Saved: sentiment_heatmap.png")
 
 
 # ── Design-Weight Correlation Model ───────────────────────────────────────────
 
-# Ordinal encoding maps for VLM categorical attributes → 0-1 numeric scale
+# Ordinal encoding maps for VLM categorical attributes -> 0-1 numeric scale
 ORNAMENTATION_MAP = {
     "plain": 0.0, "minimal": 0.25, "moderate": 0.5,
     "ornate": 0.75, "highly_ornate": 1.0,
@@ -462,7 +462,7 @@ def compute_design_weights(text_df: pd.DataFrame, img_df: pd.DataFrame) -> dict:
     merged = img_by_country.join(sent_by_country, how="inner").dropna()
 
     if len(merged) < 2:
-        print("  ⚠ Fewer than 2 countries with both image & sentiment data — "
+        print("  [!] Fewer than 2 countries with both image & sentiment data - "
               "cannot compute correlations. Using equal weights.")
         weights = {attr: round(1.0 / len(DESIGN_ATTRIBUTES), 4)
                    for attr in DESIGN_ATTRIBUTES}
@@ -528,7 +528,7 @@ def compute_design_weights(text_df: pd.DataFrame, img_df: pd.DataFrame) -> dict:
     # ── 9. Save JSON ────────────────────────────────────────────────────────
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     WEIGHTS_JSON.write_text(json.dumps(result, indent=2))
-    print(f"\n  ✓ Saved design weights → {WEIGHTS_JSON}")
+    print(f"\n  [OK] Saved design weights -> {WEIGHTS_JSON}")
 
     # ── 10. Print summary ───────────────────────────────────────────────────
     print("\n  ── Design Weights (weighted scoring function) ──")
@@ -553,7 +553,7 @@ def plot_correlation_heatmap(weights_data: dict, output_dir: Path):
     """Figure 8: Design Attribute ↔ Sentiment Correlation Heatmap."""
     benchmarks = weights_data.get("country_benchmarks", {})
     if not benchmarks:
-        print("  ⚠ No country benchmarks — skipping correlation heatmap")
+        print("  [!] No country benchmarks - skipping correlation heatmap")
         return
 
     # Build DataFrame: countries × design attributes + sentiment
@@ -615,7 +615,7 @@ def plot_correlation_heatmap(weights_data: dict, output_dir: Path):
     plt.tight_layout()
     plt.savefig(output_dir / "correlation_heatmap.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: correlation_heatmap.png")
+    print(f"  [OK] Saved: correlation_heatmap.png")
 
 
 # ── Vocabulary–Visual Cross-Correlation ───────────────────────────────────────
@@ -711,7 +711,7 @@ def compute_vocab_visual_correlation(text_df: pd.DataFrame,
     numeric_cols = [c for c in merged.columns if merged[c].dtype in (np.float64, np.int64, float, int)]
 
     if len(merged) < 3:
-        print("  ⚠ Fewer than 3 countries with both vocab & visual data — "
+        print("  [!] Fewer than 3 countries with both vocab & visual data - "
               "correlations unreliable. Reporting raw data only.")
         return {
             "correlation_matrix": {},
@@ -874,7 +874,7 @@ def compute_vocab_visual_correlation(text_df: pd.DataFrame,
     vocab_json_path = OUTPUT_DIR / "vocab_visual_correlation.json"
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     vocab_json_path.write_text(json.dumps(result, indent=2))
-    print(f"\n  ✓ Saved vocab-visual correlation → {vocab_json_path}")
+    print(f"\n  [OK] Saved vocab-visual correlation -> {vocab_json_path}")
 
     return result
 
@@ -891,7 +891,7 @@ def plot_vocab_visual_heatmap(corr_data: dict, output_dir: Path):
     visual_attrs = corr_data.get("visual_attributes", DESIGN_ATTRIBUTES)
 
     if not corr_matrix:
-        print("  ⚠ No vocab-visual correlation data — skipping heatmap")
+        print("  [!] No vocab-visual correlation data - skipping heatmap")
         return
 
     # Build DataFrames
@@ -954,7 +954,7 @@ def plot_vocab_visual_heatmap(corr_data: dict, output_dir: Path):
     plt.tight_layout()
     plt.savefig(output_dir / "vocab_visual_heatmap.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: vocab_visual_heatmap.png")
+    print(f"  [OK] Saved: vocab_visual_heatmap.png")
 
 
 # ── Design Requirements Generator ──────────────────────────────────────────────
@@ -1237,7 +1237,7 @@ def cross_analyze():
     if len(text_df) > 0 and len(img_df) > 0:
         weights_data = compute_design_weights(text_df, img_df)
     else:
-        print("\n  ⚠ Insufficient data for design-weight correlation model "
+        print("\n  [!] Insufficient data for design-weight correlation model "
               "(need both text and image data)")
 
     # ── Generate All Visualizations ─────────────────────────────────────────────
@@ -1267,10 +1267,10 @@ def cross_analyze():
         # Auto-generate design requirements from all correlation evidence
         generate_design_requirements(weights_data, vocab_corr)
     else:
-        print("  ⚠ Insufficient data for visualizations")
+        print("  [!] Insufficient data for visualizations")
     
     print("\n" + "=" * 50)
-    print("✓ Cross Analysis Complete")
+    print("[OK] Cross Analysis Complete")
     print("=" * 50)
     print(f"\nGenerated up to 8 visualization figures in: {CROSS_DIR}")
     print("  • Figure 1: text_vs_image_by_country.png")

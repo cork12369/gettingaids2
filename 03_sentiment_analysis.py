@@ -222,7 +222,7 @@ def plot_sentiment_by_country(summary_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "sentiment_by_country.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: sentiment_by_country.png")
+    print(f"  [OK] Saved: sentiment_by_country.png")
 
 
 def plot_sentiment_composition(df, output_dir):
@@ -268,7 +268,7 @@ def plot_sentiment_composition(df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "sentiment_composition.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: sentiment_composition.png")
+    print(f"  [OK] Saved: sentiment_composition.png")
 
 
 def plot_text_volume_by_country(df, output_dir, min_target=MIN_TEXT_PER_COUNTRY):
@@ -301,7 +301,7 @@ def plot_text_volume_by_country(df, output_dir, min_target=MIN_TEXT_PER_COUNTRY)
     plt.tight_layout()
     plt.savefig(output_dir / "text_volume_by_country.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: text_volume_by_country.png")
+    print(f"  [OK] Saved: text_volume_by_country.png")
 
 
 def plot_keyword_heatmap(kw_df, output_dir):
@@ -325,7 +325,7 @@ def plot_keyword_heatmap(kw_df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "keyword_heatmap.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: keyword_heatmap.png")
+    print(f"  [OK] Saved: keyword_heatmap.png")
 
 
 def plot_sentiment_confidence_distribution(df, output_dir):
@@ -357,7 +357,7 @@ def plot_sentiment_confidence_distribution(df, output_dir):
     plt.tight_layout()
     plt.savefig(output_dir / "confidence_distribution.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"  ✓ Saved: confidence_distribution.png")
+    print(f"  [OK] Saved: confidence_distribution.png")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -417,7 +417,7 @@ def run():
 
     # Save intermediate
     df.to_csv(SENTIMENT_CSV, index=False)
-    print(f"\n✓ Saved sentiment data to {SENTIMENT_CSV}")
+    print(f"\n[OK] Saved sentiment data to {SENTIMENT_CSV}")
 
     # Aggregate
     print("\n=== Sentiment Summary ===")
@@ -441,7 +441,7 @@ def run():
     plot_sentiment_confidence_distribution(df, OUTPUT_DIR)
 
     print("\n" + "=" * 50)
-    print("✓ Sentiment Analysis Complete")
+    print("[OK] Sentiment Analysis Complete")
     print("=" * 50)
     print(f"\nGenerated 5 visualization figures:")
     print("  • Figure 1: sentiment_by_country.png")

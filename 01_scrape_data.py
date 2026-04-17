@@ -117,7 +117,7 @@ def infer_country(text: str) -> str:
     return "unknown"
 
 
-def safe_get(url: str, timeout: int = 12) -> requests.Response | None:
+def safe_get(url: str, timeout: int = 30) -> requests.Response | None:
     try:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; research-scraper/1.0)"}
         resp = requests.get(url, timeout=timeout, headers=headers)
@@ -332,7 +332,7 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
             successful.append(item)
             continue
 
-        resp = safe_get(url, timeout=15)
+        resp = safe_get(url, timeout=30)
         if not resp:
             continue
 
@@ -378,7 +378,8 @@ def run():
     text_df = text_df.drop_duplicates(subset=["url", "source"])
     text_df.to_csv(TEXT_CSV, index=False)
     print(f"\nText corpus: {len(text_df)} records -> {TEXT_CSV}")
-    print(text_df.groupby(["country", "source"]).size().to_string())
+    if not text_df.empty and "country" in text_df.columns:
+        print(text_df.groupby(["country", "source"]).size().to_string())
 
     # -- Image scraping --------------------------------------------------------
     print("\n\n=== IMAGE SCRAPING ===")
@@ -403,7 +404,8 @@ def run():
     img_df = pd.DataFrame(downloaded)
     img_df.to_csv(IMG_META_CSV, index=False)
     print(f"\nImages: {len(downloaded)} downloaded -> {IMG_META_CSV}")
-    print(img_df.groupby(["country", "source"]).size().to_string())
+    if not img_df.empty and "country" in img_df.columns:
+        print(img_df.groupby(["country", "source"]).size().to_string())
 
     print("\n=== SCRAPING COMPLETE ===")
     print(f"  Text records : {len(text_df)}")
