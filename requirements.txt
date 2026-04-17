@@ -9,6 +9,9 @@ ddgs>=1.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 
+# YouTube Data API (optional - requires YOUTUBE_API_KEY)
+google-api-python-client>=2.100.0
+
 # Data
 pandas>=2.0.0
 numpy>=1.24.0
@@ -16,6 +19,7 @@ numpy>=1.24.0
 # NLP / Sentiment - CPU-only torch for faster builds
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.1.0
+transformers>=4.36.0
 sentencepiece>=0.1.99
 
 # Image processing - headless = no GUI deps, smaller build

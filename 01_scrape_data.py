@@ -35,10 +35,17 @@ MAX_TEXT_ITEMS = 80     # per query
 MAX_IMG_ITEMS  = 60     # per query
 SCRAPE_DELAY   = (1, 3) # random sleep range (seconds) — be polite
 
+# Data volume target — keep scraping until this many total data points are collected
+MIN_TOTAL_DATA_POINTS = 2000
+MAX_ROUNDS            = 5    # max retry rounds to reach the target
+
 # Optional source toggles
 ENABLE_MASTODON  = os.getenv("ENABLE_MASTODON", "true").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_PINTEREST = os.getenv("ENABLE_PINTEREST", "false").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_MAPILLARY = os.getenv("ENABLE_MAPILLARY", "false").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_YOUTUBE    = os.getenv("ENABLE_YOUTUBE", "true").strip().lower() in {"1", "true", "yes", "on"}
+YOUTUBE_API_KEY   = os.getenv("YOUTUBE_API_KEY", "").strip()
+YOUTUBE_MAX_RESULTS = int(os.getenv("YOUTUBE_MAX_RESULTS", "25"))  # per query
 
 MASTODON_INSTANCES = [
     x.strip() for x in os.getenv(
@@ -99,6 +106,40 @@ IMG_QUERIES = {
     "india":     ["india manhole cover street", "mumbai drain cover closeup"],
 }
 
+# YouTube search queries — video titles/descriptions for text, thumbnails for images
+YOUTUBE_QUERIES = {
+    "japan": [
+        "japanese manhole cover art",
+        "manhole cover japan tourism",
+        "pokemon manhole cover japan pokefuta",
+        "drainspotting japan documentary",
+    ],
+    "singapore": [
+        "singapore manhole cover design",
+        "singapore urban infrastructure",
+    ],
+    "uk": [
+        "london manhole cover design",
+        "british drain cover history",
+    ],
+    "usa": [
+        "new york manhole cover design",
+        "american sewer cover art",
+    ],
+    "germany": [
+        "kanaldeckel germany manhole cover",
+        "german manhole cover design",
+    ],
+    "france": [
+        "paris manhole cover design regard",
+        "french manhole cover art",
+    ],
+    "india": [
+        "india manhole cover street",
+        "mumbai drain cover infrastructure",
+    ],
+}
+
 # Wikimedia Commons categories — highest quality source, already labeled
 WIKIMEDIA_CATEGORIES = {
     "japan":     "Manhole_covers_in_Japan",
@@ -107,6 +148,73 @@ WIKIMEDIA_CATEGORIES = {
     "usa":       "Manhole_covers_in_the_United_States",
     "germany":   "Kanaldeckel_in_Deutschland",
     "france":    "Manholes_in_France",
+}
+
+# ── Expanded queries for retry rounds ────────────────────────────────────────
+# These are used in subsequent rounds when the initial scrape doesn't reach
+# the MIN_TOTAL_DATA_POINTS target.  Each round picks the next list entry.
+
+EXPANDED_TEXT_QUERIES = {
+    "japan": [
+        "manhole cover japan reddit",
+        "manhole art japan blog",
+        "drainspotting japan tokyo osaka",
+        "japanese sewer cover beautiful art opinion",
+        "pokefuta pokemon manhole japan review",
+        "japan street infrastructure design opinion",
+        "manhole cover japan culture tourism experience",
+        "japan drain cover photo art appreciation",
+    ],
+    "singapore": [
+        "manhole cover singapore reddit",
+        "singapore drain cover blog review",
+        "singapore street design infrastructure opinion",
+        "drain cover singapore art beautiful",
+        "singapore urban street furniture design",
+    ],
+    "uk": [
+        "manhole cover uk reddit",
+        "british drain cover blog review",
+        "london sewer cover history opinion",
+        "uk street drain cover photography",
+        "manhole cover britain industrial design",
+    ],
+    "usa": [
+        "manhole cover usa reddit",
+        "american manhole cover blog opinion",
+        "new york sewer cover art design",
+        "us drain cover street photography review",
+        "manhole cover usa history municipal",
+    ],
+    "germany": [
+        "kanaldeckel deutschland blog meinung",
+        "german manhole cover review opinion",
+        "berlin drain cover design photography",
+        "manhole cover germany art street",
+    ],
+    "france": [
+        "manhole cover paris blog opinion",
+        "regard fonte france street review",
+        "french sewer cover design photography",
+        "paris drain cover art history",
+    ],
+    "india": [
+        "manhole cover india reddit opinion",
+        "india drain cover blog review",
+        "mumbai manhole street infrastructure",
+        "indian sewer cover design municipal",
+    ],
+}
+
+EXPANDED_IMG_QUERIES = {
+    "japan":     ["japan manhole art photo", "pokefuta pokemon drain cover",
+                  "tokyo osaka manhole design", "japanese sewer lid colorful"],
+    "singapore": ["singapore drain cover photo", "singapore street utility cover"],
+    "uk":        ["uk manhole cover photo", "british drain lid design vintage"],
+    "usa":       ["usa manhole cover photo art", "american sewer lid design vintage"],
+    "germany":   ["deutschland kanaldeckel foto", "german drain cover design photo"],
+    "france":    ["paris regard fonte photo", "french manhole cover art"],
+    "india":     ["india manhole cover photo", "mumbai drain cover street photo"],
 }
 
 # Approximate city-level bboxes for Mapillary image enrichment
@@ -455,6 +563,182 @@ def scrape_mapillary(country: str, bbox: str, token: str, limit: int = 80) -> li
     return results
 
 
+# -- YouTube Scraping --------------------------------------------------------
+
+def scrape_youtube(country: str, queries: list[str]) -> tuple[list[dict], list[dict]]:
+    """
+    Scrape YouTube Data API v3 for video metadata (text) and thumbnails (images).
+    Uses google-api-python-client for reliable, quota-aware access.
+    
+    Returns: (text_results, image_results)
+    Quota cost: ~100 units per search query (~100 searches/day on free tier).
+    """
+    text_results: list[dict] = []
+    image_results: list[dict] = []
+    seen_video_ids = set()
+
+    if not YOUTUBE_API_KEY:
+        print("    ! YouTube: YOUTUBE_API_KEY not set")
+        return text_results, image_results
+
+    try:
+        from googleapiclient.discovery import build
+        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    except ImportError:
+        print("    ! YouTube: google-api-python-client not installed. Run: pip install google-api-python-client")
+        return text_results, image_results
+    except Exception as e:
+        print(f"    ! YouTube: failed to build client: {e}")
+        return text_results, image_results
+
+    for query in queries:
+        print(f"  YouTube: '{query}'")
+        try:
+            search_response = youtube.search().list(
+                q=query,
+                type="video",
+                part="snippet",
+                maxResults=YOUTUBE_MAX_RESULTS,
+                relevanceLanguage="en",
+                videoEmbeddable="true",
+            ).execute()
+
+            items = search_response.get("items", [])
+            print(f"    raw results: {len(items)}")
+
+            txt_added = 0
+            img_added = 0
+
+            for item in items:
+                video_id = item.get("id", {}).get("videoId", "")
+                if not video_id or video_id in seen_video_ids:
+                    continue
+                seen_video_ids.add(video_id)
+
+                snippet = item.get("snippet", {})
+                title = snippet.get("title", "")
+                description = snippet.get("description", "")
+                channel_title = snippet.get("channelTitle", "")
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+                # Text: title + description + channel -> sentiment corpus
+                combined_text = f"{title}. {description}".strip()
+                if combined_text and len(combined_text) > 30:
+                    text_results.append({
+                        "country": country,
+                        "query": query,
+                        "source": "youtube_video",
+                        "url": video_url,
+                        "text": combined_text,
+                        "score": 2,  # video descriptions are moderately rich signal
+                    })
+                    txt_added += 1
+
+                # Image: high-quality thumbnail
+                thumbnails = snippet.get("thumbnails", {})
+                # Prefer maxres > standard > high > medium
+                thumb = (
+                    thumbnails.get("maxres") or
+                    thumbnails.get("standard") or
+                    thumbnails.get("high") or
+                    thumbnails.get("medium") or
+                    thumbnails.get("default") or
+                    {}
+                )
+                thumb_url = thumb.get("url", "")
+                if thumb_url:
+                    image_results.append({
+                        "country": country,
+                        "query": query,
+                        "source": "youtube_thumbnail",
+                        "url": thumb_url,
+                        "title": f"YT: {title[:80]}",
+                    })
+                    img_added += 1
+
+            print(f"    added text={txt_added}, thumbnails={img_added}")
+
+        except Exception as e:
+            print(f"    ! YouTube search error: {e}")
+
+        sleep()
+
+    return text_results, image_results
+
+
+def scrape_youtube_comments(country: str, queries: list[str], max_comments: int = 50) -> list[dict]:
+    """
+    Scrape top-level comments from YouTube videos for richer sentiment data.
+    Quota cost: ~1 unit per commentThreads.list call.
+    Only fetches comments for videos found via scrape_youtube to save quota.
+    """
+    text_results: list[dict] = []
+
+    if not YOUTUBE_API_KEY:
+        return text_results
+
+    try:
+        from googleapiclient.discovery import build
+        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    except Exception:
+        return text_results
+
+    for query in queries:
+        print(f"  YouTube comments: '{query}'")
+        try:
+            # Find videos first
+            search_response = youtube.search().list(
+                q=query,
+                type="video",
+                part="snippet",
+                maxResults=5,  # Only top 5 videos for comments (save quota)
+            ).execute()
+
+            for item in search_response.get("items", []):
+                video_id = item.get("id", {}).get("videoId", "")
+                if not video_id:
+                    continue
+
+                try:
+                    comment_response = youtube.commentThreads().list(
+                        videoId=video_id,
+                        part="snippet",
+                        maxResults=max_comments,
+                        textFormat="plainText",
+                    ).execute()
+
+                    for thread in comment_response.get("items", []):
+                        comment = thread.get("snippet", {}).get("topLevelComment", {})
+                        comment_text = comment.get("snippet", {}).get("textDisplay", "")
+                        comment_url = f"https://www.youtube.com/watch?v={video_id}&lc={comment.get('id', '')}"
+
+                        if comment_text and len(comment_text) > 25:
+                            text_results.append({
+                                "country": country,
+                                "query": query,
+                                "source": "youtube_comment",
+                                "url": comment_url,
+                                "text": comment_text,
+                                "score": 1,
+                            })
+
+                except Exception as e:
+                    # Comments may be disabled for some videos
+                    if "commentsDisabled" not in str(e):
+                        print(f"    ! Comment fetch error: {e}")
+                    continue
+
+        except Exception as e:
+            print(f"    ! YouTube comment search error: {e}")
+
+        sleep()
+
+    comment_count = len(text_results)
+    if comment_count:
+        print(f"    total comments scraped: {comment_count}")
+    return text_results
+
+
 # -- Image Scraping ----------------------------------------------------------
 
 def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
@@ -656,19 +940,10 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
 
 # -- Main --------------------------------------------------------------------
 
-def run():
-    print(f"[DIAG] 01_scrape_data DATA_DIR = {DATA_DIR}")
-    print(f"[DIAG] 01_scrape_data TEXT_CSV = {TEXT_CSV}")
-    print(f"[DIAG] 01_scrape_data IMG_META_CSV = {IMG_META_CSV}")
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    IMG_DIR.mkdir(parents=True, exist_ok=True)
-
-    all_text   = []
-    all_images = []
-
-    # -- Text scraping --------------------------------------------------------
+def _run_text_scraping(all_text, all_images, text_queries):
+    """Run all text scraping sources for the given queries."""
     print("\n=== TEXT SCRAPING ===")
-    for country, queries in TEXT_QUERIES.items():
+    for country, queries in text_queries.items():
         print(f"\n[{country.upper()}]")
         items = scrape_ddg_text(country, queries)
         all_text.extend(items)
@@ -677,7 +952,7 @@ def run():
     # Optional: Mastodon enrichment (text + images)
     if ENABLE_MASTODON:
         print("\n[MASTODON]")
-        for country, queries in TEXT_QUERIES.items():
+        for country, queries in text_queries.items():
             m_text, m_images = scrape_mastodon(country, queries)
             all_text.extend(m_text)
             all_images.extend(m_images)
@@ -688,7 +963,7 @@ def run():
     # Optional: Pinterest enrichment (best-effort)
     if ENABLE_PINTEREST:
         print("\n[PINTEREST]")
-        for country, queries in IMG_QUERIES.items():
+        for country, queries in list(text_queries.items()):
             p_text, p_images = scrape_pinterest(country, queries)
             all_text.extend(p_text)
             all_images.extend(p_images)
@@ -696,22 +971,30 @@ def run():
     else:
         print("\n[PINTEREST] skipped (ENABLE_PINTEREST=false)")
 
-    # Save text corpus
-    text_df = pd.DataFrame(all_text)
-    text_df = text_df[text_df["text"].str.strip().str.len() > 30]
-    text_df = text_df.drop_duplicates(subset=["url", "source"])
-    text_df.to_csv(TEXT_CSV, index=False)
-    print(f"\nText corpus: {len(text_df)} records -> {TEXT_CSV}")
-    if not text_df.empty and "country" in text_df.columns:
-        print(text_df.groupby(["country", "source"]).size().to_string())
+    # Optional: YouTube enrichment (text + images + comments)
+    if ENABLE_YOUTUBE and YOUTUBE_API_KEY:
+        print("\n[YOUTUBE]")
+        for country, queries in YOUTUBE_QUERIES.items():
+            yt_text, yt_images = scrape_youtube(country, queries)
+            all_text.extend(yt_text)
+            all_images.extend(yt_images)
+            print(f"  [{country}] +{len(yt_text)} text, +{len(yt_images)} thumbnails")
 
-    # -- Image scraping --------------------------------------------------------
+        print("\n[YOUTUBE COMMENTS]")
+        for country, queries in YOUTUBE_QUERIES.items():
+            yt_comments = scrape_youtube_comments(country, queries)
+            all_text.extend(yt_comments)
+            print(f"  [{country}] +{len(yt_comments)} comments")
+    else:
+        print("\n[YOUTUBE] skipped")
+
+
+def _run_image_scraping(all_images, img_queries):
+    """Run all image scraping sources for the given queries."""
     print("\n\n=== IMAGE SCRAPING ===")
-    if all_images:
-        print(f"Seed image URLs from optional sources: {len(all_images)}")
 
     # DDG images
-    for country, queries in IMG_QUERIES.items():
+    for country, queries in img_queries.items():
         print(f"\n[{country.upper()}] DDG")
         items = scrape_ddg_images(country, queries)
         all_images.extend(items)
@@ -724,18 +1007,100 @@ def run():
         all_images.extend(items)
 
     # Optional: Mapillary enrichment (token required)
-    if ENABLE_MAPILLARY:
-        if not MAPILLARY_ACCESS_TOKEN:
-            print("\n[MAPILLARY] skipped (ENABLE_MAPILLARY=true but MAPILLARY_ACCESS_TOKEN is missing)")
-        else:
-            print("\n[MAPILLARY]")
-            for country, bbox in MAPILLARY_BBOX.items():
-                items = scrape_mapillary(country, bbox, MAPILLARY_ACCESS_TOKEN, limit=MAX_IMG_ITEMS)
-                all_images.extend(items)
+    if ENABLE_MAPILLARY and MAPILLARY_ACCESS_TOKEN:
+        print("\n[MAPILLARY]")
+        for country, bbox in MAPILLARY_BBOX.items():
+            items = scrape_mapillary(country, bbox, MAPILLARY_ACCESS_TOKEN, limit=MAX_IMG_ITEMS)
+            all_images.extend(items)
     else:
-        print("\n[MAPILLARY] skipped (ENABLE_MAPILLARY=false)")
+        print("\n[MAPILLARY] skipped")
 
-    # Download
+
+def run():
+    print(f"[DIAG] 01_scrape_data DATA_DIR = {DATA_DIR}")
+    print(f"[DIAG] 01_scrape_data TEXT_CSV = {TEXT_CSV}")
+    print(f"[DIAG] 01_scrape_data IMG_META_CSV = {IMG_META_CSV}")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
+
+    all_text   = []
+    all_images = []
+
+    # ── Round 0: Initial pass with primary queries ──────────────────────────
+    print("\n" + "=" * 60)
+    print("  ROUND 0: Primary queries")
+    print("=" * 60)
+
+    _run_text_scraping(all_text, all_images, TEXT_QUERIES)
+    _run_image_scraping(all_images, IMG_QUERIES)
+
+    # ── Retry loop: keep scraping with expanded queries until target reached ─
+    seen_text_urls = set()
+    seen_img_urls  = set()
+
+    for rnd in range(1, MAX_ROUNDS + 1):
+        # Deduplicate & count current totals
+        text_df = pd.DataFrame(all_text)
+        if not text_df.empty:
+            text_df = text_df[text_df["text"].str.strip().str.len() > 30]
+            text_df = text_df.drop_duplicates(subset=["url", "source"])
+
+        img_unique_urls = set()
+        for img in all_images:
+            u = img.get("url", "")
+            if u:
+                img_unique_urls.add(u)
+
+        total = len(text_df) + len(img_unique_urls)
+        print(f"\n{'=' * 60}")
+        print(f"  After round {rnd - 1}: text={len(text_df)}, images={len(img_unique_urls)}, total={total}")
+        print(f"  Target: {MIN_TOTAL_DATA_POINTS} data points")
+        print("=" * 60)
+
+        if total >= MIN_TOTAL_DATA_POINTS:
+            print(f"\n  ✓ Target reached ({total} >= {MIN_TOTAL_DATA_POINTS})!")
+            break
+
+        print(f"\n  Below target — launching ROUND {rnd} with expanded queries...")
+
+        # Pick expanded queries for this round (cycle through available ones)
+        expanded_text = {}
+        expanded_img  = {}
+        for country in TEXT_QUERIES:
+            extra = EXPANDED_TEXT_QUERIES.get(country, [])
+            # Pick queries for this round (2 per round, cycling)
+            start = (rnd - 1) * 2
+            batch = extra[start:start + 2]
+            if batch:
+                expanded_text[country] = batch
+
+        for country in IMG_QUERIES:
+            extra = EXPANDED_IMG_QUERIES.get(country, [])
+            start = (rnd - 1) * 2
+            batch = extra[start:start + 2]
+            if batch:
+                expanded_img[country] = batch
+
+        if not expanded_text and not expanded_img:
+            print("  No more expanded queries available — stopping retries.")
+            break
+
+        _run_text_scraping(all_text, all_images, expanded_text)
+        if expanded_img:
+            _run_image_scraping(all_images, expanded_img)
+
+    # ── Final save ──────────────────────────────────────────────────────────
+    # Save text corpus (deduplicated)
+    text_df = pd.DataFrame(all_text)
+    if not text_df.empty:
+        text_df = text_df[text_df["text"].str.strip().str.len() > 30]
+        text_df = text_df.drop_duplicates(subset=["url", "source"])
+    text_df.to_csv(TEXT_CSV, index=False)
+    print(f"\nText corpus: {len(text_df)} records -> {TEXT_CSV}")
+    if not text_df.empty and "country" in text_df.columns:
+        print(text_df.groupby(["country", "source"]).size().to_string())
+
+    # Download images
     print(f"\nDownloading {len(all_images)} images...")
     downloaded = download_images(all_images)
 
@@ -754,6 +1119,7 @@ def run():
     print("\n=== SCRAPING COMPLETE ===")
     print(f"  Text records : {len(text_df)}")
     print(f"  Images       : {len(downloaded)}")
+    print(f"  Total        : {len(text_df) + len(downloaded)}")
     print(f"\nNext: run 02_sentiment_analysis.py")
 
 

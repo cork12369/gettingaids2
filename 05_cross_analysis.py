@@ -871,6 +871,20 @@ def compute_vocab_visual_correlation(text_df: pd.DataFrame,
         "generated_at": datetime.now().isoformat(),
     }
 
+    # Convert numpy types for JSON serialization
+    def _convert(obj):
+        if isinstance(obj, (np.bool_,)): return bool(obj)
+        if isinstance(obj, (np.integer,)): return int(obj)
+        if isinstance(obj, (np.floating,)): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        return obj
+
+    def _sanitize(d):
+        if isinstance(d, dict): return {k: _sanitize(v) for k, v in d.items()}
+        if isinstance(d, list): return [_sanitize(v) for v in d]
+        return _convert(d)
+
+    result = _sanitize(result)
     vocab_json_path = OUTPUT_DIR / "vocab_visual_correlation.json"
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     vocab_json_path.write_text(json.dumps(result, indent=2))
