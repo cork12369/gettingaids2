@@ -714,7 +714,7 @@ def process_images():
                     "normalization_confidence": ai.get("normalization_confidence"),
                     "ai_pipeline":            "ok",
                 })
-                print(f"    ✓ AI: manhole={ai.get('is_manhole_cover')}  "
+                print(f"    [OK] AI: manhole={ai.get('is_manhole_cover')}  "
                       f"ornamentation={ai.get('ornamentation_level')}  "
                       f"style={ai.get('dominant_style')}")
             except Exception as e:
@@ -756,7 +756,7 @@ def process_images():
         if row["color_palette_overlap"] is not None:
             cv_log_parts.append(f"overlap={row['color_palette_overlap']}")
         if cv_log_parts:
-            print(f"    ✓ CV: " + "  ".join(cv_log_parts))
+            print(f"    [OK] CV: " + "  ".join(cv_log_parts))
 
         rows.append(row)
 

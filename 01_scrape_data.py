@@ -5,24 +5,28 @@ Replaces 01_scrape_reddit.py + 02_scrape_images.py
 Text:   DuckDuckGo search snippets + blog scraping -> sentiment corpus
 Images: DuckDuckGo image search + Wikimedia Commons -> visual corpus
 
-Install: pip install duckduckgo-search requests beautifulsoup4 pillow pandas
+Install: pip install ddgs requests beautifulsoup4 pillow pandas
 No API keys required.
 """
 
 import time
 import random
+import re
+import os
 import requests
 import pandas as pd
+from collections import Counter
 from pathlib import Path
 from io import BytesIO
+from urllib.parse import quote_plus
 from PIL import Image
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # -- Config -------------------------------------------------------------------
 
-DATA_DIR     = Path("data")
-IMG_DIR      = Path("data/images")
+DATA_DIR     = Path(os.getenv("DATA_DIR", "data"))
+IMG_DIR      = DATA_DIR / "images"
 TEXT_CSV     = DATA_DIR / "text_raw.csv"
 IMG_META_CSV = DATA_DIR / "image_metadata.csv"
 
@@ -30,6 +34,20 @@ MIN_IMG_SIZE   = 200    # px — skip thumbnails
 MAX_TEXT_ITEMS = 80     # per query
 MAX_IMG_ITEMS  = 60     # per query
 SCRAPE_DELAY   = (1, 3) # random sleep range (seconds) — be polite
+
+# Optional source toggles
+ENABLE_MASTODON  = os.getenv("ENABLE_MASTODON", "true").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_PINTEREST = os.getenv("ENABLE_PINTEREST", "false").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_MAPILLARY = os.getenv("ENABLE_MAPILLARY", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+MASTODON_INSTANCES = [
+    x.strip() for x in os.getenv(
+        "MASTODON_INSTANCES",
+        "mastodon.social,mastodon.world,fosstodon.org"
+    ).split(",") if x.strip()
+]
+
+MAPILLARY_ACCESS_TOKEN = os.getenv("MAPILLARY_ACCESS_TOKEN", "").strip()
 
 # Countries × search angles
 # Text queries cast wide: reviews, opinions, travel blog language
@@ -89,6 +107,18 @@ WIKIMEDIA_CATEGORIES = {
     "usa":       "Manhole_covers_in_the_United_States",
     "germany":   "Kanaldeckel_in_Deutschland",
     "france":    "Manholes_in_France",
+}
+
+# Approximate city-level bboxes for Mapillary image enrichment
+# bbox format: min_lon,min_lat,max_lon,max_lat
+MAPILLARY_BBOX = {
+    "japan":     "139.65,35.62,139.84,35.74",      # Tokyo
+    "singapore": "103.78,1.26,103.93,1.39",        # Singapore
+    "uk":        "-0.24,51.47,-0.01,51.56",        # London
+    "usa":       "-74.06,40.68,-73.90,40.83",      # NYC
+    "germany":   "13.30,52.45,13.50,52.57",        # Berlin
+    "france":    "2.25,48.82,2.42,48.90",          # Paris
+    "india":     "72.77,18.89,72.99,19.07",        # Mumbai
 }
 
 # Country keyword map for tagging scraped text by region
@@ -218,6 +248,213 @@ def scrape_page_text(url: str, max_chars: int = 3000) -> str | None:
         return None
 
 
+def scrape_mastodon(country: str, queries: list[str], per_query: int = 20) -> tuple[list[dict], list[dict]]:
+    """Best-effort Mastodon scraping from public instance search APIs."""
+    text_results: list[dict] = []
+    image_results: list[dict] = []
+    seen_status_urls = set()
+    seen_image_urls = set()
+
+    for query in queries:
+        print(f"  Mastodon: '{query}'")
+        query_success = False
+
+        for instance in MASTODON_INSTANCES:
+            base = f"https://{instance}/api/v2/search"
+            params = {
+                "q": query,
+                "type": "statuses",
+                "limit": min(per_query, 40),
+                "resolve": "true",
+            }
+
+            try:
+                resp = requests.get(
+                    base,
+                    params=params,
+                    timeout=20,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; research-scraper/1.0)"},
+                )
+                resp.raise_for_status()
+                statuses = resp.json().get("statuses", [])
+            except Exception as e:
+                print(f"    ! Mastodon [{instance}] failed: {e}")
+                continue
+
+            print(f"    {instance}: {len(statuses)} statuses")
+            query_success = True
+
+            txt_added = 0
+            img_added = 0
+            for st in statuses:
+                status_url = st.get("url") or st.get("uri") or ""
+
+                # content is HTML on Mastodon
+                raw_html = st.get("content", "")
+                plain = BeautifulSoup(raw_html, "html.parser").get_text(" ", strip=True)
+                if plain and len(plain) > 25 and status_url and status_url not in seen_status_urls:
+                    text_results.append({
+                        "country": country,
+                        "query": query,
+                        "source": "mastodon",
+                        "url": status_url,
+                        "text": plain,
+                        "score": 1,
+                    })
+                    seen_status_urls.add(status_url)
+                    txt_added += 1
+
+                for media in st.get("media_attachments", []) or []:
+                    if (media.get("type") or "").lower() != "image":
+                        continue
+                    img_url = media.get("url") or media.get("preview_url") or ""
+                    if not img_url or img_url in seen_image_urls:
+                        continue
+
+                    image_results.append({
+                        "country": country,
+                        "query": query,
+                        "source": "mastodon_image",
+                        "url": img_url,
+                        "title": media.get("description") or f"Mastodon image ({country})",
+                    })
+                    seen_image_urls.add(img_url)
+                    img_added += 1
+
+            print(f"    added text={txt_added}, images={img_added}")
+            break
+
+        if not query_success:
+            print("    ! Mastodon: no instance returned usable results")
+        sleep()
+
+    return text_results, image_results
+
+
+def scrape_pinterest(country: str, queries: list[str], max_hits_per_query: int = 60) -> tuple[list[dict], list[dict]]:
+    """Best-effort Pinterest scraping from public search pages (may be fragile)."""
+    text_results: list[dict] = []
+    image_results: list[dict] = []
+    seen_imgs = set()
+
+    for query in queries:
+        print(f"  Pinterest: '{query}'")
+        url = f"https://www.pinterest.com/search/pins/?q={quote_plus(query)}"
+        resp = safe_get(url, timeout=25)
+        if not resp:
+            continue
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        imgs = soup.find_all("img")
+        if not imgs:
+            print("    ! Pinterest returned no <img> tags (likely anti-bot or JS-only response)")
+
+        img_added = 0
+        txt_added = 0
+
+        for img in imgs[:max_hits_per_query * 3]:
+            src = img.get("src", "")
+            if not src:
+                srcset = img.get("srcset", "")
+                if srcset:
+                    src = srcset.split(",")[0].strip().split(" ")[0]
+
+            if "pinimg.com" not in src:
+                continue
+            if src in seen_imgs:
+                continue
+
+            title = (img.get("alt") or "").strip()
+            image_results.append({
+                "country": country,
+                "query": query,
+                "source": "pinterest_image",
+                "url": src,
+                "title": title or f"Pinterest image ({country})",
+            })
+            seen_imgs.add(src)
+            img_added += 1
+
+            if title and len(title) > 25:
+                text_results.append({
+                    "country": country,
+                    "query": query,
+                    "source": "pinterest_text",
+                    "url": url,
+                    "text": title,
+                    "score": 1,
+                })
+                txt_added += 1
+
+            if img_added >= max_hits_per_query:
+                break
+
+        # fallback regex extraction (some pages embed URLs in scripts)
+        if img_added == 0:
+            pinimgs = set(re.findall(r"https://i\.pinimg\.com/[^\"'\s>]+", resp.text))
+            for src in list(pinimgs)[:max_hits_per_query]:
+                if src in seen_imgs:
+                    continue
+                image_results.append({
+                    "country": country,
+                    "query": query,
+                    "source": "pinterest_image",
+                    "url": src,
+                    "title": f"Pinterest image ({country})",
+                })
+                seen_imgs.add(src)
+                img_added += 1
+
+        print(f"    added text={txt_added}, images={img_added}")
+        sleep()
+
+    return text_results, image_results
+
+
+def scrape_mapillary(country: str, bbox: str, token: str, limit: int = 80) -> list[dict]:
+    """Fetch geotagged street images from Mapillary Graph API (token required)."""
+    results: list[dict] = []
+    if not token:
+        return results
+
+    endpoint = "https://graph.mapillary.com/images"
+    params = {
+        "access_token": token,
+        "bbox": bbox,
+        "limit": min(max(limit, 1), 200),
+        "fields": "id,thumb_1024_url,thumb_2048_url,captured_at",
+    }
+
+    try:
+        resp = requests.get(endpoint, params=params, timeout=25)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+    except Exception as e:
+        print(f"  ! Mapillary [{country}] failed: {e}")
+        return results
+
+    print(f"  Mapillary [{country}] raw items: {len(data)}")
+    for item in data:
+        img_url = item.get("thumb_2048_url") or item.get("thumb_1024_url")
+        img_id = item.get("id", "")
+        if not img_url and img_id:
+            img_url = f"https://graph.mapillary.com/{img_id}/thumb-1024.jpg?access_token={token}"
+
+        if not img_url:
+            continue
+
+        results.append({
+            "country": country,
+            "query": "mapillary_bbox",
+            "source": "mapillary",
+            "url": img_url,
+            "title": f"Mapillary street image {img_id}" if img_id else f"Mapillary street image ({country})",
+        })
+
+    print(f"    usable image URLs: {len(results)}")
+    return results
+
+
 # -- Image Scraping ----------------------------------------------------------
 
 def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
@@ -228,14 +465,38 @@ def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
         for query in queries:
             print(f"  DDG images: '{query}'")
             try:
-                hits = ddgs.images(query, max_results=MAX_IMG_ITEMS)
+                hits = list(ddgs.images(query, max_results=MAX_IMG_ITEMS))
             except Exception as e:
                 print(f"    ! DDG error: {e}")
                 sleep()
                 continue
 
+            if not hits:
+                print("    ! DDG returned 0 raw hits")
+                sleep()
+                continue
+
+            sample_keys = sorted(hits[0].keys()) if isinstance(hits[0], dict) else []
+            print(f"    raw hits: {len(hits)} | sample keys: {sample_keys}")
+
+            accepted = 0
+            missing_url = 0
             for hit in hits:
-                url = hit.get("image", "")
+                if not isinstance(hit, dict):
+                    missing_url += 1
+                    continue
+
+                # DDG providers can change field names; try common alternatives.
+                url = (
+                    hit.get("image") or
+                    hit.get("url") or
+                    hit.get("thumbnail") or
+                    hit.get("thumb") or
+                    hit.get("src") or
+                    hit.get("image_url") or
+                    ""
+                )
+
                 if url:
                     results.append({
                         "country": country,
@@ -244,6 +505,11 @@ def scrape_ddg_images(country: str, queries: list[str]) -> list[dict]:
                         "url":     url,
                         "title":   hit.get("title", ""),
                     })
+                    accepted += 1
+                else:
+                    missing_url += 1
+
+            print(f"    accepted URLs: {accepted} | missing-url hits: {missing_url}")
 
             sleep()
 
@@ -271,6 +537,8 @@ def scrape_wikimedia(country: str, category: str, limit: int = 100) -> list[dict
     members = resp.json().get("query", {}).get("categorymembers", [])
     print(f"  Wikimedia [{country}]: {len(members)} files in {category}")
 
+    resolved = 0
+    unresolved = 0
     for m in members:
         img_url = resolve_wikimedia_url(m["title"])
         if img_url:
@@ -281,7 +549,12 @@ def scrape_wikimedia(country: str, category: str, limit: int = 100) -> list[dict
                 "url":     img_url,
                 "title":   m["title"],
             })
+            resolved += 1
+        else:
+            unresolved += 1
         time.sleep(0.15)
+
+    print(f"    resolved URLs: {resolved} | unresolved files: {unresolved}")
 
     return results
 
@@ -312,10 +585,18 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
     """Download and validate images, save to /data/images/<country>/."""
     successful = []
     seen_urls = set()
+    stats = Counter()
+    source_saved = Counter()
 
     for item in metadata_list:
+        stats["total_items"] += 1
         url = item.get("url", "")
-        if not url or url in seen_urls:
+        if not url:
+            stats["missing_url"] += 1
+            continue
+
+        if url in seen_urls:
+            stats["duplicate_url"] += 1
             continue
         seen_urls.add(url)
 
@@ -330,15 +611,19 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
         if filepath.exists():
             item["local_path"] = str(filepath)
             successful.append(item)
+            stats["already_exists"] += 1
+            source_saved[item.get("source", "unknown")] += 1
             continue
 
         resp = safe_get(url, timeout=30)
         if not resp:
+            stats["request_failed"] += 1
             continue
 
         try:
             img = Image.open(BytesIO(resp.content)).convert("RGB")
             if min(img.size) < MIN_IMG_SIZE:
+                stats["too_small"] += 1
                 continue
 
             img.save(filepath, "JPEG", quality=90)
@@ -346,11 +631,25 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
             item["width"]      = img.size[0]
             item["height"]     = img.size[1]
             successful.append(item)
+            stats["saved"] += 1
+            source_saved[item.get("source", "unknown")] += 1
 
         except Exception as e:
+            stats["decode_or_save_failed"] += 1
             print(f"    ! Image save failed: {e}")
 
         time.sleep(0.3)
+
+    print("\nImage download diagnostics:")
+    for key in [
+        "total_items", "missing_url", "duplicate_url", "already_exists",
+        "request_failed", "too_small", "decode_or_save_failed", "saved"
+    ]:
+        print(f"  - {key}: {stats.get(key, 0)}")
+    if source_saved:
+        print("  - saved by source:")
+        for source, count in source_saved.items():
+            print(f"      {source}: {count}")
 
     return successful
 
@@ -358,6 +657,9 @@ def download_images(metadata_list: list[dict]) -> list[dict]:
 # -- Main --------------------------------------------------------------------
 
 def run():
+    print(f"[DIAG] 01_scrape_data DATA_DIR = {DATA_DIR}")
+    print(f"[DIAG] 01_scrape_data TEXT_CSV = {TEXT_CSV}")
+    print(f"[DIAG] 01_scrape_data IMG_META_CSV = {IMG_META_CSV}")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     IMG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -372,6 +674,28 @@ def run():
         all_text.extend(items)
         print(f"  -> {len(items)} text records")
 
+    # Optional: Mastodon enrichment (text + images)
+    if ENABLE_MASTODON:
+        print("\n[MASTODON]")
+        for country, queries in TEXT_QUERIES.items():
+            m_text, m_images = scrape_mastodon(country, queries)
+            all_text.extend(m_text)
+            all_images.extend(m_images)
+            print(f"  [{country}] +{len(m_text)} text, +{len(m_images)} image URLs")
+    else:
+        print("\n[MASTODON] skipped (ENABLE_MASTODON=false)")
+
+    # Optional: Pinterest enrichment (best-effort)
+    if ENABLE_PINTEREST:
+        print("\n[PINTEREST]")
+        for country, queries in IMG_QUERIES.items():
+            p_text, p_images = scrape_pinterest(country, queries)
+            all_text.extend(p_text)
+            all_images.extend(p_images)
+            print(f"  [{country}] +{len(p_text)} text, +{len(p_images)} image URLs")
+    else:
+        print("\n[PINTEREST] skipped (ENABLE_PINTEREST=false)")
+
     # Save text corpus
     text_df = pd.DataFrame(all_text)
     text_df = text_df[text_df["text"].str.strip().str.len() > 30]
@@ -383,6 +707,8 @@ def run():
 
     # -- Image scraping --------------------------------------------------------
     print("\n\n=== IMAGE SCRAPING ===")
+    if all_images:
+        print(f"Seed image URLs from optional sources: {len(all_images)}")
 
     # DDG images
     for country, queries in IMG_QUERIES.items():
@@ -397,6 +723,18 @@ def run():
         items = scrape_wikimedia(country, category)
         all_images.extend(items)
 
+    # Optional: Mapillary enrichment (token required)
+    if ENABLE_MAPILLARY:
+        if not MAPILLARY_ACCESS_TOKEN:
+            print("\n[MAPILLARY] skipped (ENABLE_MAPILLARY=true but MAPILLARY_ACCESS_TOKEN is missing)")
+        else:
+            print("\n[MAPILLARY]")
+            for country, bbox in MAPILLARY_BBOX.items():
+                items = scrape_mapillary(country, bbox, MAPILLARY_ACCESS_TOKEN, limit=MAX_IMG_ITEMS)
+                all_images.extend(items)
+    else:
+        print("\n[MAPILLARY] skipped (ENABLE_MAPILLARY=false)")
+
     # Download
     print(f"\nDownloading {len(all_images)} images...")
     downloaded = download_images(all_images)
@@ -404,6 +742,12 @@ def run():
     img_df = pd.DataFrame(downloaded)
     img_df.to_csv(IMG_META_CSV, index=False)
     print(f"\nImages: {len(downloaded)} downloaded -> {IMG_META_CSV}")
+    print(f"[DIAG] image_metadata exists after write: {IMG_META_CSV.exists()}")
+    print(f"[DIAG] image_metadata row count: {len(img_df)}")
+    if len(downloaded) == 0:
+        print("[WARN] Stage 1 completed with 0 downloaded images.")
+        print("[WARN] Dashboard will show no images if image_metadata.csv is empty.")
+        print("[WARN] Check DDG raw hits, Wikimedia resolved URLs, and Image download diagnostics above.")
     if not img_df.empty and "country" in img_df.columns:
         print(img_df.groupby(["country", "source"]).size().to_string())
 

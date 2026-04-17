@@ -67,6 +67,7 @@ MAX_LOG_ENTRIES = 1000  # Limit log growth to prevent memory issues
 _sample_lock = threading.Lock()
 _sample_generating = False  # True while background thread builds grade_sample.csv
 _sample_generation_done = False  # True once sample has been built this lifecycle
+_sample_generation_error = None  # Last sample-generation error, if any
 
 def _key_valid(p):
     if not ACCESS_KEY: return False
@@ -153,9 +154,10 @@ def _ensure_sample():
     Returns True immediately if sample already exists or generation was started.
     Returns False only if source data is missing.
     """
-    global _sample_generating
+    global _sample_generating, _sample_generation_error, _sample_generation_done
     # Fast path: already generated this lifecycle or on disk
     if _sample_generation_done or GRADE_SAMPLE.exists():
+        _sample_generation_done = True
         return True
 
     with _sample_lock:
@@ -166,26 +168,31 @@ def _ensure_sample():
         # If a background thread is already building the sample, return True
         # and let the thread complete — the frontend timeout handles waiting
         if _sample_generating:
-            return True
+            return "generating"
 
         src = DATA_DIR / "text_with_sentiment.csv"
         if not src.exists():
+            _sample_generation_error = "No sentiment data. Run Stage 2 first."
             return False
 
         # Mark as generating and hand off to background thread
         _sample_generating = True
+        _sample_generation_error = None
 
         def _build_sample():
             """Background worker: read full CSV, stratified sample, write grade_sample.csv."""
+            global _sample_generating, _sample_generation_done, _sample_generation_error
             try:
                 import pandas as pd
                 df = pd.read_csv(src)
                 if "country" not in df.columns or len(df) == 0:
+                    _sample_generation_error = "Sentiment data exists but is empty or missing the country column."
                     return
                 countries = df["country"].unique().tolist()
                 if "unknown" in countries:
                     countries.remove("unknown")
                 if not countries:
+                    _sample_generation_error = "Sentiment data only contains unknown countries, so no grading sample could be built."
                     return
                 per_country = max(SAMPLE_TARGET // len(countries), 1)
                 frames = []
@@ -200,16 +207,16 @@ def _ensure_sample():
                 sample = sample.reset_index(drop=True)
                 sample["snippet_id"] = sample.index
                 sample.to_csv(GRADE_SAMPLE, index=False)
-            except Exception:
-                pass
+                _sample_generation_error = None
+            except Exception as e:
+                _sample_generation_error = str(e)
             finally:
-                global _sample_generating, _sample_generation_done
                 _sample_generating = False
-                _sample_generation_done = True
+                _sample_generation_done = GRADE_SAMPLE.exists()
 
         t = threading.Thread(target=_build_sample, daemon=True)
         t.start()
-        return True
+        return "generating"
 
 def _total_chunks():
     if not GRADE_SAMPLE.exists():
@@ -853,8 +860,21 @@ def team_page():
 @app.route("/grade/api/start")
 @require_auth
 def grade_start():
-    if not _ensure_sample():
-        return jsonify({"error": "No sentiment data. Run Stage 2 first."})
+    sample_status = _ensure_sample()
+    if sample_status == "generating":
+        return jsonify({
+            "error": "Grading sample is still being generated. Please retry in a few seconds.",
+            "generating": True,
+            "sample_path": str(GRADE_SAMPLE),
+            "source_path": str(DATA_DIR / "text_with_sentiment.csv"),
+        })
+    if not sample_status:
+        return jsonify({
+            "error": _sample_generation_error or "No sentiment data. Run Stage 2 first.",
+            "generating": False,
+            "sample_path": str(GRADE_SAMPLE),
+            "source_path": str(DATA_DIR / "text_with_sentiment.csv"),
+        })
     gid = _get_or_create_grader_id()
     ci = _claim_chunk(gid)
     if ci is None:
@@ -950,6 +970,9 @@ def history_api():
         "countries": [], "last_scrape": "Never",
         "text_sources": {}, "image_sources": {},
         "text_by_country": [], "image_by_country": [],
+        "image_metadata_path": str(DATA_DIR / "image_metadata.csv"),
+        "image_metadata_exists": False,
+        "image_metadata_rows": 0,
     }
     try:
         import pandas as pd
@@ -977,13 +1000,15 @@ def history_api():
         # Image data
         img_path = DATA_DIR / "image_metadata.csv"
         if img_path.exists():
-            df = pd.read_csv(img_path)
-            result["total_images"] = len(df)
-            if "source" in df.columns:
-                src = df["source"].value_counts().to_dict()
+            result["image_metadata_exists"] = True
+            img_df = pd.read_csv(img_path)
+            result["image_metadata_rows"] = len(img_df)
+            result["total_images"] = len(img_df)
+            if "source" in img_df.columns:
+                src = img_df["source"].value_counts().to_dict()
                 result["image_sources"] = {k: int(v) for k, v in src.items()}
-            if "country" in df.columns:
-                grp = df.groupby("country")
+            if "country" in img_df.columns:
+                grp = img_df.groupby("country")
                 for country, group in grp:
                     row = {"country": country, "count": len(group)}
                     if "source" in group.columns:
@@ -992,7 +1017,7 @@ def history_api():
                     result["image_by_country"].append(row)
                 # Merge countries
                 img_countries = set(result["countries"])
-                img_countries.update(df["country"].unique().tolist())
+                img_countries.update(img_df["country"].unique().tolist())
                 result["countries"] = sorted(img_countries)
 
             # Use most recent mtime
@@ -1015,7 +1040,10 @@ def get_counts():
         for key, path in [("scrape", DATA_DIR/"text_raw.csv"), ("sentiment", DATA_DIR/"text_with_sentiment.csv")]:
             if path.exists(): counts[key] = len(pd.read_csv(path))
         img_meta = DATA_DIR / "image_metadata.csv"
-        if img_meta.exists(): counts["images"] = len(pd.read_csv(img_meta))
+        counts["images_meta_path"] = str(img_meta)
+        counts["images_meta_exists"] = img_meta.exists()
+        if img_meta.exists():
+            counts["images"] = len(pd.read_csv(img_meta))
         elif IMAGES_DIR.exists(): counts["images"] = len(list(IMAGES_DIR.rglob("*.*")))
         if (OUTPUT_DIR/"cross_analysis.csv").exists(): counts["cross"] = len(pd.read_csv(OUTPUT_DIR/"cross_analysis.csv"))
         if (OUTPUT_DIR/"classification_report.csv").exists(): counts["confusion"] = 1
@@ -1145,23 +1173,86 @@ def run_stage():
     
     def go():
         with _job_lock:
-            running_state = job_state["running"]
             script_name = job_state["script"]
-        
+
         try:
-            r = subprocess.run(["python", script_name], capture_output=True, text=True, timeout=600)
-            # Log exit code
-            log_entry = f"Done {script_name}: exit {r.returncode}"
-            # Capture stderr output for debugging (show last 500 chars if non-empty)
-            stderr_output = r.stderr.strip() if r.stderr else ""
-            if r.returncode != 0 and stderr_output:
-                # Show error context from stderr
-                error_lines = stderr_output.split('\n')[-10:]  # Last 10 lines of error
+            import queue as _queue_mod
+
+            proc = subprocess.Popen(
+                ["python", script_name],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, bufsize=1,
+            )
+
+            stdout_lines = []
+            stderr_lines = []
+
+            # Thread-based readers (Windows-compatible, unlike selectors)
+            def _enqueue(out, q):
+                for line in out:
+                    q.put(line)
+                out.close()
+
+            q_out = _queue_mod.Queue()
+            q_err = _queue_mod.Queue()
+            t_out = threading.Thread(target=_enqueue, args=(proc.stdout, q_out), daemon=True)
+            t_err = threading.Thread(target=_enqueue, args=(proc.stderr, q_err), daemon=True)
+            t_out.start()
+            t_err.start()
+
+            watchdog_timeout = 600  # seconds of silence before kill
+            last_activity = time.time()
+
+            while True:
+                # Drain both queues
+                got_output = False
+                while not q_out.empty():
+                    try:
+                        stdout_lines.append(q_out.get_nowait())
+                        got_output = True
+                    except _queue_mod.Empty:
+                        break
+                while not q_err.empty():
+                    try:
+                        stderr_lines.append(q_err.get_nowait())
+                        got_output = True
+                    except _queue_mod.Empty:
+                        break
+
+                if got_output:
+                    last_activity = time.time()  # RESET watchdog
+
+                # Process done + queues drained?
+                if proc.poll() is not None and q_out.empty() and q_err.empty():
+                    break
+
+                # Watchdog: kill if no output for too long
+                if time.time() - last_activity >= watchdog_timeout:
+                    proc.kill()
+                    proc.wait()
+                    stdout_lines.append(
+                        f"[TIMEOUT] Killed after {watchdog_timeout}s of no output\n"
+                    )
+                    break
+
+                # Brief sleep to avoid busy-spin
+                time.sleep(1)
+
+            t_out.join(timeout=5)
+            t_err.join(timeout=5)
+
+            returncode = proc.returncode
+            stdout_text = "".join(stdout_lines)
+            stderr_text = "".join(stderr_lines)
+
+            log_entry = f"Done {script_name}: exit {returncode}"
+            stderr_output = stderr_text.strip()
+            if returncode != 0 and stderr_output:
+                error_lines = stderr_output.split('\n')[-10:]
                 log_entry += f"\n  STDERR ({len(stderr_output)} chars):\n    " + '\n    '.join(error_lines)
-            elif r.stdout and len(r.stdout) > 2000:
-                log_entry += f"\n  STDOUT ({len(r.stdout)} chars - truncated)"
-            elif r.returncode == 0 and stderr_output:
-                # Log warnings even on success
+            elif len(stdout_text) > 2000:
+                log_entry += f"\n  STDOUT ({len(stdout_text)} chars - truncated)"
+            elif returncode == 0 and stderr_output:
                 log_entry += f"\n  Warnings: {stderr_output[:200]}..."
         except Exception as e:
             log_entry = f"Error {script_name}: {e}"
@@ -1170,7 +1261,6 @@ def run_stage():
                 job_state["running"] = False
                 job_state["script"] = None
                 job_state["started_at"] = None
-                # Truncate logs to prevent memory leak (max 1000 entries)
                 if len(job_state["log"]) >= MAX_LOG_ENTRIES:
                     job_state["log"] = job_state["log"][-MAX_LOG_ENTRIES:]
                 job_state["log"].append(log_entry)

@@ -35,6 +35,11 @@ GitHub repo
                     SESSION_SECRET          ← Flask session signing secret
                     OPENROUTER_API_KEY      ← for VLM+LLM image analysis
                     YOUTUBE_API_KEY         ← for extra scraping coverage (optional)
+                    ENABLE_MASTODON         ← toggle Mastodon enrichment (default true)
+                    MASTODON_INSTANCES      ← comma-separated Mastodon instances
+                    ENABLE_PINTEREST        ← toggle Pinterest enrichment (default false)
+                    ENABLE_MAPILLARY        ← toggle Mapillary enrichment (default false)
+                    MAPILLARY_ACCESS_TOKEN  ← required only when Mapillary is enabled
 ```
 
 ---
@@ -133,6 +138,11 @@ Zeabur dashboard → your service → Variables tab.
   ADMIN_RESET_PASSWORD   = your_admin_password   ← enables admin reset controls on dashboard
   OPENROUTER_API_KEY     = your_openrouter_key   ← enables AI image analysis (Stage 3)
   YOUTUBE_API_KEY        = your_youtube_key      ← enables YouTube scraping (Stage 1)
+  ENABLE_MASTODON        = true                  ← Stage 1 Mastodon text/image enrichment
+  MASTODON_INSTANCES     = mastodon.social,mastodon.world,fosstodon.org
+  ENABLE_PINTEREST       = false                 ← Stage 1 Pinterest enrichment (best-effort)
+  ENABLE_MAPILLARY       = false                 ← Stage 1 Mapillary enrichment (token-gated)
+  MAPILLARY_ACCESS_TOKEN = MLY|...               ← required only if ENABLE_MAPILLARY=true
 
 Never put these in code or commit them to GitHub.
 
@@ -168,6 +178,25 @@ Never put these in code or commit them to GitHub.
   4. Copy the key and paste it into Zeabur Variables as OPENROUTER_API_KEY
 
   Without this key, Stage 3 runs in metadata-only mode (no AI visual analysis).
+
+### Stage 1 source toggles (Mastodon / Pinterest / Mapillary)
+
+  - Mastodon is enabled by default in code. To disable:
+      ENABLE_MASTODON = false
+
+  - Pinterest is disabled by default (recommended unless needed, as it is fragile):
+      ENABLE_PINTEREST = true
+
+  - Mapillary is disabled by default and requires a token:
+      ENABLE_MAPILLARY = true
+      MAPILLARY_ACCESS_TOKEN = MLY|your_token
+
+  - Optional Mastodon instance override:
+      MASTODON_INSTANCES = mastodon.social,mastodon.world,fosstodon.org
+
+  Notes:
+  - Pinterest scraping is best-effort and may degrade if upstream anti-bot behavior changes.
+  - Mapillary is useful for geo street imagery but may include non-manhole scenes.
 
 ---
 
@@ -252,7 +281,18 @@ Rough estimate if running only during active use (~10 hrs total):
    If Stage 3 says "OPENROUTER_API_KEY not set", set OPENROUTER_API_KEY.
    Both are optional — the pipeline still runs without them, just with less data.
 
-6. "PIPELINE RUNS BUT /data IS EMPTY"
+6. OPTIONAL SOURCE FLAGS (MASTODON / PINTEREST / MAPILLARY)
+   If logs show these sources are skipped, check:
+   a) ENABLE_MASTODON / ENABLE_PINTEREST / ENABLE_MAPILLARY values
+   b) MAPILLARY_ACCESS_TOKEN present when ENABLE_MAPILLARY=true
+   c) MASTODON_INSTANCES list is valid and reachable from Zeabur runtime
+
+   Expected skip logs include:
+     "[PINTEREST] skipped (ENABLE_PINTEREST=false)"
+     "[MAPILLARY] skipped (ENABLE_MAPILLARY=false)"
+     "[MAPILLARY] skipped (ENABLE_MAPILLARY=true but MAPILLARY_ACCESS_TOKEN is missing)"
+
+7. "PIPELINE RUNS BUT /data IS EMPTY"
    This is the #1 deployment issue. Causes in order of likelihood:
    a) Persistent volume not mounted → check Volumes tab, Mount Path must be /data
    b) DATA_DIR env var not set or wrong value → check it equals /data
@@ -262,7 +302,7 @@ Rough estimate if running only during active use (~10 hrs total):
      [DIAG] DATA_DIR = /data
      [DIAG] /data writable = True
 
-7. RATE LIMIT STATE IS IN-MEMORY
+8. RATE LIMIT STATE IS IN-MEMORY
    flask-limiter uses memory storage (resets on service restart).
    Fine for a student project — not suitable for high-security production.
 
@@ -283,3 +323,8 @@ Rough estimate if running only during active use (~10 hrs total):
 [ ] ADMIN_RESET_PASSWORD set (optional — enables admin reset controls)
 [ ] OPENROUTER_API_KEY set (optional — enables AI image analysis)
 [ ] YOUTUBE_API_KEY set (optional — enables YouTube scraping enrichment)
+[ ] ENABLE_MASTODON reviewed (default true)
+[ ] ENABLE_PINTEREST reviewed (default false)
+[ ] ENABLE_MAPILLARY reviewed (default false)
+[ ] MAPILLARY_ACCESS_TOKEN set if ENABLE_MAPILLARY=true
+[ ] MASTODON_INSTANCES reviewed/overridden if needed
