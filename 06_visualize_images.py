@@ -91,7 +91,7 @@ def plot_country_image_distribution(df, output_dir):
     ax.set_title('Country Image Distribution\n(Percentage Share)', fontsize=13, fontweight='bold')
     
     # Add legend
-    ax.legend(country_counts.index, country_counts.values, 
+    ax.legend(wedges, [f"{idx} ({val})" for idx, val in zip(country_counts.index, country_counts.values)],
               title="Images", loc="center left", 
               bbox_to_anchor=(1, 0, 0.5, 1))
     
