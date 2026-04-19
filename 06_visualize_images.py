@@ -107,6 +107,7 @@ def plot_source_distribution(df, output_dir):
         # Fallback: count images by filename pattern or parent folder
         if 'filename' in df.columns:
             sources = df['filename'].apply(lambda x: 'scraped' if 'ddg' in str(x).lower() else 'other')
+            df['source'] = sources
         else:
             print("  ⚠ 'source' column not found, skipping source distribution")
             return
