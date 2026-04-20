@@ -675,7 +675,7 @@ fetch('/grade/api/submit',{method:'POST',headers:{'Content-Type':'application/js
 var colors=['rgba(231,76,60,0.3)','rgba(243,156,18,0.3)','rgba(46,204,113,0.3)'];
 var fl=document.getElementById('flash');fl.style.background=colors[s];fl.style.opacity='1';
 setTimeout(()=>{fl.style.opacity='0';},200);idx++;show();
-if(d.chunk_complete){fetch('/refresh-cross-analysis').catch(()=>{});}});}
+if(d.chunk_complete){fetch('/refresh-cross-analysis').catch(()=>{});}}});}
 load();
 </script></body></html>"""
 
